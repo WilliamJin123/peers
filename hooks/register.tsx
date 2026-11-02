@@ -620,7 +620,13 @@ export const register: Register = on => {
     snap.at = await $.clock.now()
     snap.cmd = cmd
     snap.reach = await k($).reach(cmd, cwd)
-    const r: any = await next(e)
+    await k($).begin(snap)
+    let r: any
+    try {
+      r = await next(e)
+    } finally {
+      if (!r || r.deny !== undefined || r.isReadOnly) await k($).finish(snap)
+    }
     if (!r || r.deny !== undefined || r.isReadOnly) return r
     const hitPeers: string[] = await k($).after(snap, titleOf(e.description ?? '') || titleOf(said.get(e.tool_use_id ?? '') ?? ''))
     // `peers claim` and `peers close` change the ticket in the ledger; refresh the band.
