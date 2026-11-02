@@ -49,6 +49,8 @@ The next session writes `~/.local/bin/peers.cmd` (cmd, PowerShell) and `~/.local
 
 ### After an update
 
+An open session keeps the mod it started with. A plugin from a marketplace updates only at a restart. To skip restarts, run peers from a plugin folder that sessions watch. Name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` of `~/.claude/settings.json`, for example `~/.claude/mods/peers`. Disable the marketplace copy. `scripts/live.sh` copies HEAD into that folder, and each open session reloads the mod. Set `PEERS_HOST` to reinstall the view server from it too. The env change itself needs one restart.
+
 Each client (the pane, the TUI, `peers view`) asks the server its version (`/api/ping`). If the server is older, the client stops it (`POST /api/stop`, local only) and starts its own. A supervised server comes back on the new code by itself.
 
 A server from before 0.16.7 has no stop. Stop it once by hand, then any client starts the new one.
