@@ -619,6 +619,7 @@ export const register: Register = on => {
 
     snap.at = await $.clock.now()
     snap.cmd = cmd
+    snap.reach = await k($).reach(cmd, cwd)
     const r: any = await next(e)
     if (!r || r.deny !== undefined || r.isReadOnly) return r
     const hitPeers: string[] = await k($).after(snap, titleOf(e.description ?? '') || titleOf(said.get(e.tool_use_id ?? '') ?? ''))

@@ -378,6 +378,19 @@ switch (cmd) {
     const only = dash > 0 ? pathsOf(argv.slice(dash + 1)).map(p => p.replace(/\/$/, '')) : null
     const under = f => only.some(p => f === p || f.startsWith(`${p}/`))
     const mine = only && argv.includes('--whole') ? [...dirtySet()].filter(under) : mineDirty(l).filter(f => !only || under(f))
+    // A named path also takes its dirty files that no live session holds: one written earlier in this same
+    // command is in no ledger yet (it lands after the command ends). A peer's file stays out, and is named.
+    const left = []
+    if (only && !argv.includes('--whole')) {
+      const others = peers()
+      for (const f of [...dirtySet()].filter(under)) {
+        if (mine.includes(f)) continue
+        const who = others.filter(p => p.files[f] && holding(p, f, liveOf(f))).map(nameOf)
+        if (who.length) left.push(`${f} (${who.join(', ')})`)
+        else mine.push(f)
+      }
+      if (left.length) process.stderr.write(`left out, a peer holds them (peers take <file>, or --whole): ${few(left, 5)}\n`)
+    }
     if (!mine.length) die(only ? `none of ${only.join(', ')} is an uncommitted file of yours (peers status)` : 'nothing of yours to commit (edited in this same command? the ledger lands after it ends: run peers commit on its own)')
     const body = [msg, '', ...(l.ticket ? [`Ticket: ${l.ticket}`] : [])].join('\n')
     // A private index built from HEAD: a peer's staged files never ride along, and the
