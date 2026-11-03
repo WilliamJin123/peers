@@ -392,7 +392,13 @@ switch (cmd) {
       if (left.length) process.stderr.write(`left out, a peer holds them (peers take <file>, or --whole): ${few(left, 5)}\n`)
     }
     if (!mine.length) die(only ? `none of ${only.join(', ')} is an uncommitted file of yours (peers status)` : 'nothing of yours to commit (edited in this same command? the ledger lands after it ends: run peers commit on its own)')
-    const body = [msg, '', ...(l.ticket ? [`Ticket: ${l.ticket}`] : [])].join('\n')
+    // The subject names another task of the bound one's kind (`(WA-1010)` while WA-1012 is bound): the trailer follows the subject.
+    const pre = l.ticket?.match(/^[A-Za-z]+-/)?.[0]
+    // Only ids in parentheses: prose like "regression from WA-932" names no target.
+    const said = pre ? [...new Set((subject.match(/\([^)]*\)/g) ?? []).flatMap(x => x.match(new RegExp(`\\b${pre}\\d+\\b`, 'gi')) ?? []).map(t => t.toUpperCase()))] : []
+    const tickets = said.length && !said.includes(l.ticket?.toUpperCase()) ? said : l.ticket ? [l.ticket] : []
+    if (tickets[0] !== l.ticket && l.ticket) process.stderr.write(`peers commit: the subject names ${tickets.join(', ')}, not the bound ${l.ticket}: the trailer says ${tickets.join(', ')}\n`)
+    const body = [msg, '', ...tickets.map(t => `Ticket: ${t}`)].join('\n')
     // A private index built from HEAD: a peer's staged files never ride along, and the
     // update-ref below lands only if HEAD did not move under us.
     const index = git(['rev-parse', '--path-format=absolute', '--git-path', `peers-${session}.index`]).trim()
@@ -471,10 +477,10 @@ switch (cmd) {
     console.log(`${sha.slice(0, 7)} ${told} (${n} file${n === 1 ? '' : 's'})`)
     for (const x of verbose ? notes : notes.slice(0, 3)) console.log(`note: ${x}`)
     if (!verbose && notes.length > 3) console.log(`note: ${notes.length - 3} more (-v)`)
-    act.log('commit', { sha, files: l.commits.at(-1).files, ticket: l.ticket, t: told.split('\n')[0] })
-    if (l.ticket) {
-      const r = await act.send('note', [l.ticket, `${sha.slice(0, 7)} ${told}`], send)
-      if (!r.ok) process.stderr.write(`peers commit: note to ${l.ticket} not sent, tries again on the next peers command: ${r.err}\n`)
+    act.log('commit', { sha, files: l.commits.at(-1).files, ticket: tickets.join(', ') || undefined, t: told.split('\n')[0] })
+    for (const t of tickets) {
+      const r = await act.send('note', [t, `${sha.slice(0, 7)} ${told}`], send)
+      if (!r.ok) process.stderr.write(`peers commit: note to ${t} not sent, tries again on the next peers command: ${r.err}\n`)
     }
     break
   }
