@@ -3,11 +3,11 @@
 // Ledger: ~/.claude/peers/<encodeURIComponent(repo root)>/<session>.json, written by the peers mod (Claude Code)
 // or by `peers hook <agent>` (Codex, Cursor), both through lib/core.mjs.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
-import { holding, isLive, nameOf } from '../lib/core.mjs'
+import { holding, isLive, joinEntry, nameOf } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
 import { configSync, runningSync } from '../lib/io.mjs'
 import { slash, winOf } from '../lib/path.mjs'
@@ -101,18 +101,38 @@ function die(msg, code = 1) {
 function git(args, opts = {}) {
   return execFileSync('git', ['--no-optional-locks', ...args], { encoding: 'utf8', stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], maxBuffer: 1 << 28, ...opts })
 }
-function load() {
-  try {
-    return JSON.parse(readFileSync(own, 'utf8'))
-  } catch {
-    const now = Date.now()
-    return { v: 1, session, root, started: now, updated: now, files: {}, commits: [] }
+// The ledger as on disk; null when there is none. A torn read (the mod mid-write) is read again, never taken as empty.
+function readOwn() {
+  for (let i = 0; ; i++) {
+    let t
+    try {
+      t = readFileSync(own, 'utf8')
+    } catch {
+      return null
+    }
+    try {
+      return JSON.parse(t)
+    } catch {
+      if (i >= 4) die(`peers: ${own} does not parse; nothing written. Run the command again.`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15)
+    }
   }
 }
+function load() {
+  const now = Date.now()
+  return readOwn() ?? { v: 1, session, root, started: now, updated: now, files: {}, commits: [] }
+}
+// The mod records this session's edits while a command runs (a parallel tool call): its newer entries and commits stay.
 function save(l) {
+  const disk = readOwn()
+  for (const [f, e] of Object.entries(disk?.files ?? {})) if (!l.files[f] || e.last > l.files[f].last) l.files[f] = l.files[f] ? joinEntry(l.files[f], e) : e
+  for (const c of disk?.commits ?? []) if (!l.commits.some(x => x.sha === c.sha)) l.commits.push(c)
+  l.commits.sort((a, b) => a.at - b.at)
   l.updated = Date.now()
   mkdirSync(dir, { recursive: true })
-  writeFileSync(own, JSON.stringify(l))
+  const tmp = `${own}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(l))
+  renameSync(tmp, own)
 }
 function peers() {
   if (!existsSync(dir)) return []
@@ -407,8 +427,11 @@ switch (cmd) {
     process.on('exit', () => rmSync(index, { force: true }))
     let sha
     let notes
+    let at
     for (let attempt = 0; ; attempt++) {
       notes = []
+      // Before the files are read: an edit after this is not in the commit, so its file stays uncommitted.
+      at = Date.now()
       const live = peers()
       const head = git(['rev-parse', 'HEAD']).trim()
       git(['read-tree', head], { env })
@@ -448,7 +471,7 @@ switch (cmd) {
       sha = commit
       // The shared index catches up for these paths only; a peer's hunks stay in the worktree.
       withIndexRetry(() => git(['reset', '-q', '--', ...files]))
-      l.commits.push({ sha, at: Date.now(), files })
+      l.commits.push({ sha, at, files })
       break
     }
     // Keep only lines that are still uncommitted: committed ones are no longer anyone's.
