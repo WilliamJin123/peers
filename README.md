@@ -202,4 +202,4 @@ Why adapters in JS: the other choice was shell command lines in the config (no c
 
 ## License
 
-PolyForm Shield 1.0.0. See LICENSE.md.
+PolyForm Strict 1.0.0: noncommercial use only; no changes, no redistribution. See LICENSE.md.
