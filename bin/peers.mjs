@@ -18,7 +18,7 @@ const argv = process.argv.slice(2)
 const cmd = argv[0]
 const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | check | ls | ready | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
-(--whole takes the file as it is). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira or your own module: README, Task boards.
+(--whole takes the file as it is). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
 tui: the same view full screen in any terminal (no agent session needed).
   match: only the repos it names. A path (., ../lander, ~/x) is that folder; a name is a repo name, part of one,
@@ -393,7 +393,8 @@ switch (cmd) {
     }
     if (!mine.length) die(only ? `none of ${only.join(', ')} is an uncommitted file of yours (peers status)` : 'nothing of yours to commit (edited in this same command? the ledger lands after it ends: run peers commit on its own)')
     // The subject names another task of the bound one's kind (`(WA-1010)` while WA-1012 is bound): the trailer follows the subject.
-    const pre = l.ticket?.match(/^[A-Za-z]+-/)?.[0]
+    // Only `KEY-12` ids: a GitHub `(#12)` in a subject is a PR number.
+    const pre = l.ticket?.match(/^([A-Za-z]+-)\d+$/)?.[1]
     // Only ids in parentheses: prose like "regression from WA-932" names no target.
     const said = pre ? [...new Set((subject.match(/\([^)]*\)/g) ?? []).flatMap(x => x.match(new RegExp(`\\b${pre}\\d+\\b`, 'gi')) ?? []).map(t => t.toUpperCase()))] : []
     const tickets = said.length && !said.includes(l.ticket?.toUpperCase()) ? said : l.ticket ? [l.ticket] : []

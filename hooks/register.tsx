@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, RenderChildren } from 'claude-code'
 import type { Peer, Row, Span, ViewBody, ViewFocus, ViewFold, ViewIndex, ViewOrder } from '../types'
-import { MODS, core, dirOf, holds, idOf, nameOf, peerLinesLost, quote } from '../lib/core.mjs'
+import { MODS, core, dirOf, holds, idOf, nameOf, peerLinesLost, quote, shortTicket } from '../lib/core.mjs'
 import { isAbs, slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
 import { delta } from '../lib/lines.mjs'
@@ -146,7 +146,7 @@ const refreshPeers = async ($: any) => {
       const title = await k($).sessionTitle(p)
       // The pane's name: the one the person gave the session, else its id; the task is a tag beside it.
       const label = await k($).sessionLabel(p).catch(() => null)
-      list.push({ session: p.session, name: tag + (label ?? idOf(p)), id: idOf(p), ticket: p.ticket, title, files: files.length, shared, last, started: p.started, adds, dels, doing, sharedFiles })
+      list.push({ session: p.session, name: tag + (label ?? idOf(p)), id: idOf(p), ticket: shortTicket(p.ticket) ?? undefined, title, files: files.length, shared, last, started: p.started, adds, dels, doing, sharedFiles })
     }
   }
   list.sort((a, b) => b.last - a.last)
