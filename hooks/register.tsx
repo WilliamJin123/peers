@@ -59,6 +59,7 @@ const k = ($: any) =>
     stat: (p: string) => $.fs.stat(p),
     run: (argv: string[], o: { timeoutMs: number }) => $.process.run(argv, o),
     now: () => $.clock.now(),
+    sleep: (ms: number) => $.clock.sleep(ms),
   })
 
 // An edit's title: the first sentence of what the model said before it, as plain text.
