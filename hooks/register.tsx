@@ -579,7 +579,7 @@ export const register: Register = on => {
           const deny = await k($).writeDeny(root, rel, d, peers)
           if (deny) return { deny }
         }
-        lost = peerLinesLost(peers, rel, d.removed, await k($).liveKeys(root, rel))
+        lost = peerLinesLost(peers, rel, d.removed, await k($).liveKeys(root, rel), (await k($).loadMine(root)).files[rel])
       }
 
       const line = abs ? await peerLine($, abs, true) : null

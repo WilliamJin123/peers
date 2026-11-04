@@ -192,7 +192,7 @@ function lineSets(f, peers) {
   let live
   for (const p of peers) {
     const e = p.files[f]
-    if (!e || !holding(p, f, (live ??= liveOf(f)))) continue
+    if (!e || !holding(p, f, (live ??= liveOf(f)), l.files[f])) continue
     theirs.who.push(nameOf(p))
     // A peer on an old mod, or whose edits held no distinctive line: nothing to split by.
     if (!e.added?.length && !e.removed?.length) theirs.blind = true
@@ -385,7 +385,7 @@ switch (cmd) {
       const others = peers()
       for (const f of [...dirtySet()].filter(under)) {
         if (mine.includes(f)) continue
-        const who = others.filter(p => p.files[f] && holding(p, f, liveOf(f))).map(nameOf)
+        const who = others.filter(p => p.files[f] && holding(p, f, liveOf(f), l.files[f])).map(nameOf)
         if (who.length) left.push(`${f} (${who.join(', ')})`)
         else mine.push(f)
       }
