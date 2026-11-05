@@ -620,6 +620,7 @@ export const register: Register = on => {
 
     snap.at = await $.clock.now()
     snap.cmd = cmd
+    snap.cwd = cwd
     snap.reach = await k($).reach(cmd, cwd)
     await k($).begin(snap)
     let r: any

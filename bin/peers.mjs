@@ -134,27 +134,35 @@ function save(l) {
   writeFileSync(tmp, JSON.stringify(l))
   renameSync(tmp, own)
 }
+// A peer's ledger caught mid-write (the mod has no rename) parses on a retry; dropped, the peer's lines go unseen.
+function readParsed(path) {
+  for (let i = 0; i < 6; i++) {
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'))
+    } catch (e) {
+      if (e.code === 'ENOENT') return null
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  }
+  return null
+}
 function peers() {
   if (!existsSync(dir)) return []
   const now = Date.now()
   const running = runningSync(homedir())
   return readdirSync(dir)
     .filter(f => f.endsWith('.json') && f !== `${session}.json`)
-    .map(f => {
-      try {
-        return JSON.parse(readFileSync(join(dir, f), 'utf8'))
-      } catch {
-        return null
-      }
-    })
+    .map(f => readParsed(join(dir, f)))
     .filter(l => l && isLive(l, now, running))
 }
 function dirtySet() {
   return new Set(statusPaths(git(['status', '--porcelain', '-z', '--untracked-files=all'])))
 }
+// A file stays mine while I hold it as a peer would (holding): an entry with no lines, older than a commit
+// of the file by any route, is not (WA-1067.10: a 10-28 entry put a peer's new hunk in a commit).
 function mineDirty(l) {
   const d = dirtySet()
-  return Object.keys(l.files).filter(f => d.has(f))
+  return Object.keys(l.files).filter(f => d.has(f) && holding(l, f, liveOf(f)))
 }
 // Task board: lib/board.mjs, picked by `board` in ~/.claude/peers/config.json (Backlog.md by default).
 const config = configSync(homedir())
@@ -232,7 +240,7 @@ function split(f, live) {
   const cut = !d.binary && d.hunks.length && !d.hunks.some(h => h.noEol) && d.head.every(x => !/^(new|deleted) file/.test(x))
   if (!cut) return { whole: true, who: theirs.who, uncut: true, none }
   // A peer with no line data: hunks holding our lines are ours, the rest theirs.
-  const by = { mine: [], theirs: [], mixed: [] }
+  const by = { mine: [], theirs: [], mixed: [], none: [] }
   for (const h of d.hunks) by[owner(h, mine, theirs, theirs.blind)].push(h)
   return { whole: false, who: theirs.who, head: d.head, ...by }
 }
@@ -312,19 +320,18 @@ switch (cmd) {
     break
   }
   case 'status': {
-    const files = Object.keys(l.files)
     const all = dirtySet()
-    const peerFiles = new Set(peers().flatMap(p => Object.keys(p.files)))
-    const mine = files.filter(f => all.has(f))
-    const shared = mine.filter(f => peerFiles.has(f))
-    const others = [...all].filter(f => !l.files[f])
-    const orphans = others.filter(f => !peerFiles.has(f))
     const live = peers()
+    const peerFiles = new Set(live.flatMap(p => Object.keys(p.files)))
+    const mine = mineDirty(l)
+    const shared = mine.filter(f => peerFiles.has(f))
+    const others = [...all].filter(f => !mine.includes(f))
+    const orphans = others.filter(f => !peerFiles.has(f))
     const sh = shared.map(f => ({ f, s: split(f, live) })).filter(x => x.s.who)
     if (asJson) {
       console.log(JSON.stringify({
         mine,
-        shared: sh.map(({ f, s }) => ({ file: f, with: s.who, whole: !!s.whole, none: !!s.none, mine: s.mine?.length ?? 0, theirs: s.theirs?.length ?? 0, mixed: s.mixed?.length ?? 0 })),
+        shared: sh.map(({ f, s }) => ({ file: f, with: s.who, whole: !!s.whole, none: !!s.none, mine: s.mine?.length ?? 0, theirs: s.theirs?.length ?? 0, mixed: s.mixed?.length ?? 0, unrecorded: s.none?.length ?? 0 })),
         hidden: others.length - orphans.length,
         orphans,
       }))
@@ -343,7 +350,7 @@ switch (cmd) {
     const none = whole.filter(x => x.s.none)
     if (verbose)
       for (const { f, s } of sh)
-        note.push(s.whole ? `${f} shared with ${s.who.join(', ')} (whole file${s.none ? ', no lines of yours: commit skips it' : ''})` : `${f}: ${s.mine.length} hunk(s) yours, ${s.theirs.length} ${s.who.join(', ')}'s${s.mixed.length ? `, ${s.mixed.length} mixed` : ''}`)
+        note.push(s.whole ? `${f} shared with ${s.who.join(', ')} (whole file${s.none ? ', no lines of yours: commit skips it' : ''})` : `${f}: ${s.mine.length} hunk(s) yours, ${s.theirs.length} ${s.who.join(', ')}'s${s.mixed.length ? `, ${s.mixed.length} mixed` : ''}${s.none.length ? `, ${s.none.length} no one's` : ''}`)
     else if (sh.length) {
       const who = [...new Set(sh.flatMap(x => x.s.who))].join(', ')
       note.push(`${sh.length} shared with ${who}: ${sh.length - whole.length} by hunk, ${whole.length} whole` + (none.length ? `, ${none.length} with no lines of yours (commit skips them: ${few(none.map(x => x.f))})` : '') + ' (-v for each)')
@@ -362,7 +369,7 @@ switch (cmd) {
           console.log(`# ${f}: whole file, ${s.who ? `yours and ${s.who.join(', ')}'s${s.none ? ' (no lines of yours)' : ''}` : 'yours'}`)
           continue
         }
-        const tagged = [...s.mine.map(h => [h, 'yours']), ...s.theirs.map(h => [h, `${s.who.join(', ')}'s`]), ...s.mixed.map(h => [h, 'mixed'])]
+        const tagged = [...s.mine.map(h => [h, 'yours']), ...s.theirs.map(h => [h, `${s.who.join(', ')}'s`]), ...s.mixed.map(h => [h, 'mixed']), ...s.none.map(h => [h, "no one's"])]
         console.log(`# ${f}`)
         for (const [h, who] of tagged.sort((x, y) => x[0].a - y[0].a)) console.log([`## ${who}`, ...h.text].join('\n'))
       }
@@ -377,7 +384,7 @@ switch (cmd) {
     for (const { f, s } of parts.filter(p => !p.s.whole)) {
       if (!s.mine.length && !s.mixed.length) continue
       console.log([...s.head, ...[...s.mine, ...s.mixed].sort((x, y) => x.a - y.a).flatMap(h => h.text)].join('\n'))
-      console.log(`(${f}: ${s.theirs.length} hunk(s) of ${s.who.join(', ')} not shown)`)
+      console.log(`(${f}: ${s.theirs.length} hunk(s) of ${s.who.join(', ')}${s.none.length ? `, ${s.none.length} of no one's` : ''} not shown)`)
     }
     break
   }
@@ -451,6 +458,7 @@ switch (cmd) {
         }
         const take = [...s.mine, ...s.mixed]
         if (s.theirs.length) notes.push(`${f}: left ${s.theirs.length} hunk(s) of ${s.who.join(', ')} uncommitted`)
+        if (s.none.length) notes.push(`${f}: left ${s.none.length} hunk(s) no session recorded (peers take ${f}, or --whole)`)
         if (s.mixed.length) notes.push(`${f}: ${s.mixed.length} hunk(s) mix your lines with ${s.who.join(', ')}'s; committed whole`)
         if (!take.length) continue
         const blob = git(['hash-object', '-w', '--stdin'], { input: applyHunks(git(['show', `${head}:${f}`]), take) }).trim()
