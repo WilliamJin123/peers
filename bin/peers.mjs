@@ -16,7 +16,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | check | ls | ready | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
@@ -123,9 +123,13 @@ function load() {
   return readOwn() ?? { v: 1, session, root, started: now, updated: now, files: {}, commits: [] }
 }
 // The mod records this session's edits while a command runs (a parallel tool call): its newer entries and commits stay.
-function save(l) {
+// gone: files `drop` took out, not merged back.
+function save(l, gone = []) {
   const disk = readOwn()
-  for (const [f, e] of Object.entries(disk?.files ?? {})) if (!l.files[f] || e.last > l.files[f].last) l.files[f] = l.files[f] ? joinEntry(l.files[f], e) : e
+  for (const [f, e] of Object.entries(disk?.files ?? {})) {
+    if (gone.includes(f)) continue
+    if (!l.files[f] || e.last > l.files[f].last) l.files[f] = l.files[f] ? joinEntry(l.files[f], e) : e
+  }
   for (const c of disk?.commits ?? []) if (!l.commits.some(x => x.sha === c.sha)) l.commits.push(c)
   l.commits.sort((a, b) => a.at - b.at)
   l.updated = Date.now()
@@ -312,6 +316,21 @@ switch (cmd) {
       if (skipped.length) process.stderr.write(`skipped ${skipped.length}, no uncommitted change (paths are from the repo root): ${few(skipped)}\n`)
     }
     if (!took.length) process.exitCode = 1
+    break
+  }
+  case 'drop': {
+    // Take's reverse: a file a command of yours took from a peer leaves your ledger; the peer's record stands.
+    const named = pathsOf(argv.slice(1))
+    if (!named.length) die('peers drop <file...|->: name the files, or - to read them from stdin')
+    const dropped = named.filter(f => l.files[f])
+    for (const f of dropped) delete l.files[f]
+    if (dropped.length) {
+      save(l, dropped)
+      act.log('drop', { files: dropped })
+    }
+    if (asJson) console.log(JSON.stringify({ dropped }))
+    else console.log(`dropped ${dropped.length} file${dropped.length === 1 ? '' : 's'}${dropped.length < named.length ? `; not yours: ${few(named.filter(f => !l.files[f] && !dropped.includes(f)))}` : ''}`)
+    if (!dropped.length) process.exitCode = 1
     break
   }
   case 'files': {
@@ -616,7 +635,7 @@ switch (cmd) {
         : a.op === 'check' ? `check ${a.sha.slice(0, 7)} ${a.status === 0 ? 'passed' : `failed (${a.status})`}`
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
         : a.op === 'close' ? `close ${a.ticket}: ${a.reason}`
-        : a.op === 'take' ? `take ${a.files.join(', ')}`
+        : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`
         : a.op
       if (what) console.log(`${t}  ${what}`)
     }

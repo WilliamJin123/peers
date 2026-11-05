@@ -49,7 +49,7 @@ The next session writes `~/.local/bin/peers.cmd` (cmd, PowerShell) and `~/.local
 
 ### After an update
 
-An open session keeps the mod it started with. A plugin from a marketplace updates only at a restart. To skip restarts, run peers from a plugin folder that sessions watch. Name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` of `~/.claude/settings.json`, for example `~/.claude/mods/peers`. Disable the marketplace copy. `scripts/live.sh` copies HEAD into that folder, and each open session reloads the mod. Set `PEERS_HOST` to reinstall the view server from it too. The env change itself needs one restart.
+An open session keeps the mod it started with. A plugin from a marketplace updates only at a restart. To skip restarts, run peers from a plugin folder that sessions watch. Name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` of `~/.claude/settings.json`, for example `~/.claude/mods/peers`. Disable the marketplace copy. `scripts/live.sh` copies HEAD into that folder, and each open session reloads the mod when its current turn ends. Until then it runs the old version, so act records stay readable across versions. Set `PEERS_HOST` to reinstall the view server from it too. The env change itself needs one restart.
 
 Each client (the pane, the TUI, `peers view`) asks the server its version (`/api/ping`). If the server is older, the client stops it (`POST /api/stop`, local only) and starts its own. A supervised server comes back on the new code by itself.
 
@@ -103,6 +103,7 @@ peers commit -m "x" -- a.ts # only those of your files
 peers commit -m "x" --whole -- src  # every dirty file under src, untracked too
 peers take map/new.c4       # claim a file peers missed: its diff lines go to your ledger
 git diff --name-only | peers take -   # a file list may be - (stdin); a done peer's files too
+peers drop map/new.c4       # take's reverse: a peer's file your command took leaves your ledger
 peers files                 # your uncommitted files, for a formatter
 peers check                 # gate (or config `check`) on that commit in ~/worktrees/<repo>-check
 peers close -r "shipped"   # Done, summary carries the sha
