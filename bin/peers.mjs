@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
-import { holding, isLive, joinEntry, nameOf } from '../lib/core.mjs'
+import { compact, holding, isLive, joinEntry, nameOf } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
 import { configSync, runningSync } from '../lib/io.mjs'
 import { slash, winOf } from '../lib/path.mjs'
@@ -107,8 +107,9 @@ function readOwn() {
     let t
     try {
       t = readFileSync(own, 'utf8')
-    } catch {
-      return null
+    } catch (e) {
+      if (e.code === 'ENOENT') return null
+      die(`peers: ${own} unreadable (${e.code}); nothing written.`)
     }
     try {
       return JSON.parse(t)
@@ -132,6 +133,7 @@ function save(l, gone = []) {
   }
   for (const c of disk?.commits ?? []) if (!l.commits.some(x => x.sha === c.sha)) l.commits.push(c)
   l.commits.sort((a, b) => a.at - b.at)
+  compact(l, dirtySet())
   l.updated = Date.now()
   mkdirSync(dir, { recursive: true })
   const tmp = `${own}.${process.pid}.tmp`
