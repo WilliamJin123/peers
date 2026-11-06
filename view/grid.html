@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · grid</title>
+<style>
+:root{--hud-bg:#060b14d9;--hud-fg:#d8f6ff;--hud-dim:#5f8796;--hud-line:#123447;--hud-alert:#ff7a2e;--hud-font:ui-monospace,"SF Mono",Menlo,monospace}
+html,body{margin:0;height:100%;overflow:hidden;background:#03060b}
+canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+import { THREE, stage, flights, ease } from './kit.js'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
+
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers // grid' })
+const S = stage({ bg: '#03060b', fov: 38, shadows: false })
+const { scene, camera, renderer } = S
+const fly = flights(scene, S.onFrame)
+const ALERT = new THREE.Color('#ff7a2e'), CLASH = new THREE.Color('#ff2f4a'), CYAN = new THREE.Color('#2de2ff')
+const place = () => { const a = innerWidth / innerHeight; const d = a < 1 ? 50 / a : 40; camera.position.setLength(d); scene.fog && (scene.fog.near = d, scene.fog.far = d + 55) }
+scene.fog = new THREE.Fog('#03060b', 40, 95)
+camera.position.set(26, 24, 26); place(); addEventListener('resize', place)
+
+const composer = new EffectComposer(renderer)
+composer.addPass(new RenderPass(scene, camera))
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 1.05, 0.55, 0.12))
+composer.addPass(new OutputPass())
+S.usePost(composer)
+
+const neon = (hex) => { const c = new THREE.Color(hex); const h = {}; c.getHSL(h); return c.setHSL(h.h, 0.95, 0.6) }
+const grid = new THREE.GridHelper(120, 120, '#0b5163', '#08303d'); scene.add(grid)
+const glow = (color, k = 1) => new THREE.MeshBasicMaterial({ color: color.clone().multiplyScalar(k) })
+
+// districts: repo squares, file pillars on a 1-unit lattice
+const D = { wren: [-7, -7], peers: [7, -7], vireo: [-7, 7], engine: [7, 7] }
+const P = {} // repo/file → pillar
+const edgeM = new THREE.LineBasicMaterial({ color: '#145a6e' })
+function label(str, color = '#2de2ff') {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 96
+  const g = c.getContext('2d'); g.font = '600 56px ui-monospace,Menlo,monospace'; g.fillStyle = color; g.textBaseline = 'middle'; g.fillText(str, 4, 48)
+  const t = new THREE.CanvasTexture(c)
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(5.3, 1), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }))
+  m.rotation.x = -Math.PI / 2
+  return m
+}
+for (const r of REPOS) {
+  const [cx, cz] = D[r.id]
+  const sq = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-5, -5], [5, -5], [5, 5], [-5, 5]].map(([x, z]) => new THREE.Vector3(cx + x, 0.02, cz + z))), new THREE.LineBasicMaterial({ color: CYAN }))
+  scene.add(sq)
+  const l = label(r.id); l.position.set(cx - 2.2, 0.03, cz + 5.8); scene.add(l)
+  const fs = files(r.id)
+  const n = Math.ceil(Math.sqrt(fs.length))
+  fs.forEach((f, i) => {
+    const x = cx + ((i % n) - (n - 1) / 2) * 2.1, z = cz + (Math.floor(i / n) - (n - 1) / 2) * 2.1
+    const geo = new THREE.BoxGeometry(0.9, 1, 0.9); geo.translate(0, 0.5, 0)
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: '#06141c' }))
+    const e = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeM.clone())
+    m.add(e); m.position.set(x, 0, z); m.scale.y = 0.3
+    scene.add(m)
+    P[`${r.id}/${f}`] = { m, e, h: 0.3, owner: null, hot: 0, red: 0 }
+  })
+}
+
+// core: main branch ring at the centre
+const core = new THREE.Mesh(new THREE.TorusGeometry(1.4, 0.07, 8, 64), glow(CYAN))
+core.rotation.x = Math.PI / 2; core.position.y = 0.4; scene.add(core)
+const core2 = core.clone(); core2.scale.setScalar(0.6); core2.position.y = 0.9; scene.add(core2)
+
+// sessions: orbs with trails
+const O = {}
+const TRAIL = 70
+for (const x of sim.sessions) {
+  const c = neon(x.color)
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.38, 20, 20), glow(c, 1.6))
+  const halo = new THREE.Mesh(new THREE.RingGeometry(0.6, 0.72, 40), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0, side: THREE.DoubleSide }))
+  halo.rotation.x = -Math.PI / 2
+  const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 30, 8, 1, true), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0 }))
+  beacon.position.y = 15
+  const g = new THREE.Group(); g.add(orb, halo, beacon); scene.add(g)
+  const pos = new Float32Array(TRAIL * 3), col = new Float32Array(TRAIL * 3)
+  const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(pos, 3)); tg.setAttribute('color', new THREE.BufferAttribute(col, 3))
+  const trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true }))
+  trail.frustumCulled = false; scene.add(trail)
+  const [cx, cz] = D[x.repo]
+  g.position.set(cx, 1.2, cz)
+  for (let i = 0; i < TRAIL; i++) pos.set([cx, 0.08, cz], i * 3)
+  O[x.id] = { x, c, g, orb, halo, beacon, trail, pos, col, path: [], park: new THREE.Vector3(cx + (x.id.charCodeAt(5) % 3 - 1) * 1.2, 0.6, cz - 6.2) }
+  for (const [f, n] of x.holds) own(x.repo, f, x, n)
+}
+
+function own(repo, f, x, lines) {
+  const p = P[`${repo}/${f}`]; if (!p) return
+  p.owner = x.id; p.h = Math.min(0.3 + lines / 25, 6)
+  p.e.material.color.copy(neon(x.color))
+  p.m.material.color.copy(neon(x.color)).multiplyScalar(0.18)
+}
+function release(p) { p.owner = null; p.e.material.color.set('#145a6e'); p.m.material.color.set('#06141c') }
+
+// manhattan path along grid lines at hover height
+function route(o, to) {
+  const a = o.g.position
+  o.path = [new THREE.Vector3(to.x, a.y, a.z), new THREE.Vector3(to.x, to.y, to.z)]
+}
+
+function packet(from, to, color, h = 0.15, dur = 1.6) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), glow(color, 2))
+  const a = from.clone().setY(h), b = to.clone().setY(h), mid = new THREE.Vector3(b.x, h, a.z)
+  fly(m, dur, (k, o) => { const e = ease(k); o.position.copy(e < 0.5 ? a.clone().lerp(mid, e * 2) : mid.clone().lerp(b, e * 2 - 1)) })
+}
+
+sim.on((e) => {
+  const o = O[e.who] || O[e.from]
+  if (e.type === 'edit' || e.type === 'take') {
+    own(e.repo, e.file, o.x, o.x.holds.get(e.file) || 1)
+    const p = P[`${e.repo}/${e.file}`]
+    p.hot = 1
+    route(o, p.m.position.clone().setY(p.h + 0.9))
+  }
+  if (e.type === 'msg') packet(o.g.position, O[e.to].g.position, o.c)
+  if (e.type === 'clash') {
+    const p = P[`${e.repo}/${e.file}`]; p.red = 2.2
+    const n = 40, g = new THREE.BufferGeometry(), v = new Float32Array(n * 3), dir = []
+    for (let i = 0; i < n; i++) dir.push(new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.8, Math.random() - 0.5).normalize().multiplyScalar(2 + Math.random() * 3))
+    g.setAttribute('position', new THREE.BufferAttribute(v, 3))
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({ color: CLASH, size: 0.18, transparent: true }))
+    const c0 = p.m.position.clone().setY(p.h)
+    fly(pts, 1.2, (k, q) => { for (let i = 0; i < n; i++) v.set([c0.x + dir[i].x * k, c0.y + dir[i].y * k - 3 * k * k, c0.z + dir[i].z * k], i * 3); g.attributes.position.needsUpdate = true; q.material.opacity = 1 - k })
+  }
+  if (e.type === 'commit') {
+    for (const f of e.files) {
+      const p = P[`${e.repo}/${f}`]; if (!p) continue
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 40, 8, 1, true), new THREE.MeshBasicMaterial({ color: o.c, transparent: true }))
+      beam.position.copy(p.m.position).setY(20)
+      fly(beam, 1.1, (k, b) => (b.material.opacity = 1 - k))
+      packet(p.m.position, new THREE.Vector3(0, 0, 0), o.c, 0.2, 1.4)
+      release(p); p.h = 0.3
+    }
+    setTimeout(() => (core.userData.flash = 1), 1300)
+  }
+  if (e.type === 'state' && e.state === 'idle') route(o, o.park)
+})
+
+S.onFrame((dt, t) => {
+  core.rotation.z += dt * 0.4; core2.rotation.z -= dt * 0.7
+  core.userData.flash = Math.max(0, (core.userData.flash || 0) - dt)
+  core.material.color.copy(CYAN).multiplyScalar(1 + core.userData.flash * 3)
+  for (const p of Object.values(P)) {
+    p.m.scale.y += (p.h - p.m.scale.y) * 0.08
+    p.hot = Math.max(0, p.hot - dt * 1.5)
+    if (p.red > 0) { p.red -= dt; p.e.material.color.copy(Math.sin(t * 30) > 0 ? CLASH : (p.owner ? neon(sim.byId[p.owner].color) : new THREE.Color('#145a6e'))) }
+  }
+  for (const o of Object.values(O)) {
+    const { x, g } = o
+    if (o.path.length) {
+      const tgt = o.path[0], d = g.position.distanceTo(tgt), s = Math.min(d, 9 * dt)
+      if (d < 0.02) o.path.shift(); else g.position.addScaledVector(tgt.clone().sub(g.position).normalize(), s)
+    }
+    const blocked = x.state === 'blocked', idle = x.state === 'idle', wait = x.state === 'wait'
+    o.orb.material.color.copy(blocked ? ALERT : o.c).multiplyScalar(idle ? 0.35 : wait ? 0.8 + Math.sin(t * 3) * 0.3 : 1.6)
+    o.orb.position.y = Math.sin(t * 2 + x.id.charCodeAt(5)) * 0.12
+    o.halo.material.opacity = blocked ? 0.6 + Math.sin(t * 7) * 0.4 : 0
+    o.halo.scale.setScalar(1 + (blocked ? (t * 1.5) % 1 : 0))
+    o.beacon.material.opacity = blocked ? 0.5 + Math.sin(t * 7) * 0.3 : 0
+    // trail: shift, push ground projection of the orb
+    o.pos.copyWithin(3, 0, (TRAIL - 1) * 3)
+    o.pos.set([g.position.x, 0.06, g.position.z], 0)
+    for (let i = 0; i < TRAIL; i++) { const k = (1 - i / TRAIL) ** 1.5 * (idle ? 0.3 : 1.4); o.col.set([o.c.r * k, o.c.g * k, o.c.b * k], i * 3) }
+    o.trail.geometry.attributes.position.needsUpdate = true; o.trail.geometry.attributes.color.needsUpdate = true
+    const [sx, sy, vis] = S.project(g.position.clone().add(new THREE.Vector3(0, 1.1, 0)))
+    hud.place(x.id, sx, sy, vis)
+  }
+  hud.frame()
+})
+</script>
+</body>
+</html>

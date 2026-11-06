@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · plan</title>
+<style>
+:root{--bg:#f7f6f2;--card:#fff;--fg:#1f1d1a;--dim:#7d776c;--line:#e7e3da;--alert:#e8622c;--font:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 var(--font)}
+.app{display:grid;grid-template-columns:1fr 360px;grid-template-rows:auto 1fr;height:100%}
+header{grid-column:1/-1;display:flex;gap:16px;align-items:baseline;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header b{font-weight:600} .n{color:var(--dim)} .n b{color:var(--fg)} .n.alert b{color:var(--alert)}
+.plan{position:relative;min-height:0;padding:18px}
+svg{width:100%;height:100%;display:block}
+.rail{border-left:1px solid var(--line);overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 11px;transition:border-color .3s}
+.card.blocked{border-color:var(--alert)}
+.row{display:flex;gap:8px;align-items:center}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.name{font-weight:600} .id{color:var(--dim);font-size:11px}
+.pill{margin-left:auto;font-size:11px;padding:1px 7px;border-radius:999px;background:#efece5;color:var(--dim)}
+.pill.blocked{background:var(--alert);color:#fff} .pill.work{background:#e6efe2;color:#3f6a3a} .pill.wait{background:#f2ead8;color:#8a6a2a}
+.task{color:var(--dim);margin:2px 0 6px 17px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-left:17px}
+.chip{font:11px/1.6 ui-monospace,Menlo,monospace;padding:0 6px;border-radius:5px;background:#f3f1ec;border:1px solid transparent}
+.chip.focus{border-color:currentColor}
+.chip.clash{background:var(--alert);color:#fff}
+.last{margin:6px 0 0 17px;color:var(--dim);font-size:12px}
+h3{margin:10px 0 2px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+.log div{font-size:12px;padding:3px 0;border-bottom:1px solid var(--line)} .log .alert{color:var(--alert)}
+.room rect.bg{fill:#fff;stroke:var(--line)} .room text{font:600 11px var(--font);fill:var(--dim)}
+.tile rect{fill:#f3f1ec;stroke:none;transition:fill .4s}
+.tile text{font:6px ui-monospace,Menlo,monospace;fill:#9a948a;pointer-events:none}
+.tok{transition:transform 1s cubic-bezier(.3,.7,.2,1)}
+.tok text{font:600 9px var(--font);fill:#fff;text-anchor:middle;dominant-baseline:central}
+.pulse{animation:p 1s infinite} @keyframes p{50%{opacity:.25}}
+.fly{fill:none;stroke-width:1.5;stroke-dasharray:3 4;animation:d .6s linear infinite} @keyframes d{to{stroke-dashoffset:-14}}
+@media (max-width:760px){.app{grid-template-columns:1fr;grid-template-rows:auto auto 1fr;height:auto;min-height:100%}.plan{height:62vw;padding:10px}.rail{border-left:none;border-top:1px solid var(--line);overflow:visible}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><b>peers · plan</b><span class="n" data-k="work"></span><span class="n alert" data-k="blocked"></span><span class="n" data-k="wait"></span><span class="n" data-k="idle"></span></header>
+  <div class="plan"><svg id="svg" viewBox="0 0 400 300"></svg></div>
+  <aside class="rail"><div id="cards" style="display:flex;flex-direction:column;gap:8px"></div><h3>Activity</h3><div class="log" id="log"></div></aside>
+</div>
+<script type="module">
+import { createSim, REPOS, files, label } from './sim.js'
+const sim = createSim()
+const NS = 'http://www.w3.org/2000/svg'
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); parent?.append(e); return e }
+const svg = document.getElementById('svg')
+const ROOM = { wren: [8, 8, 236, 150], peers: [252, 8, 140, 150], vireo: [8, 166, 168, 126], engine: [184, 166, 208, 126] }
+const T = {} // repo/file → tile
+for (const r of REPOS) {
+  const [x, y, w, h] = ROOM[r.id]
+  const g = el('g', { class: 'room' }, svg)
+  el('rect', { class: 'bg', x, y, width: w, height: h, rx: 8 }, g)
+  el('text', { x: x + 10, y: y + 18 }, g).textContent = r.id
+  const fs = files(r.id), cols = Math.floor((w - 16) / 54)
+  fs.forEach((f, i) => {
+    const tx = x + 8 + (i % cols) * 54, ty = y + 28 + Math.floor(i / cols) * 30
+    const t = el('g', { class: 'tile' }, g)
+    const rect = el('rect', { x: tx, y: ty, width: 50, height: 24, rx: 4 }, t)
+    el('text', { x: tx + 3, y: ty + 14 }, t).textContent = f.split('/').pop()
+    T[`${r.id}/${f}`] = { rect, x: tx + 25, y: ty + 12 }
+  })
+}
+const TOK = {}
+for (const x of sim.sessions) {
+  const g = el('g', { class: 'tok' }, svg)
+  const ring = el('circle', { r: 13, fill: 'none', stroke: 'var(--alert)', 'stroke-width': 2, opacity: 0 }, g)
+  el('circle', { r: 9, fill: x.color, stroke: '#fff', 'stroke-width': 2 }, g)
+  el('text', {}, g).textContent = x.name.split(' ').map((w) => w[0]).join('').toUpperCase()
+  const [rx, ry, rw] = ROOM[x.repo]
+  TOK[x.id] = { g, ring, home: [rx + rw - 16, ry + 14 + Object.keys(TOK).filter((k) => sim.byId[k].repo === x.repo).length * 22] }
+  move(x.id, ...TOK[x.id].home)
+}
+function move(id, x, y) { TOK[id].at = [x, y]; TOK[id].g.style.transform = `translate(${x}px,${y}px)` }
+const shade = (hex) => hex + '33'
+
+const clash = new Map()
+function paint() {
+  for (const k in T) T[k].rect.style.fill = ''
+  for (const x of sim.sessions) for (const [f] of x.holds) { const t = T[`${x.repo}/${f}`]; if (t) t.rect.style.fill = shade(x.color) }
+  for (const x of sim.sessions) if (x.focus) { const t = T[`${x.repo}/${x.focus}`]; t && (t.rect.style.fill = x.color + '88') }
+}
+const ORDER = { blocked: 0, wait: 1, work: 2, idle: 3 }, WORD = { work: 'working', blocked: 'needs you', wait: 'waiting', idle: 'idle' }
+const lastBy = {}
+function rail() {
+  const c = { work: 0, blocked: 0, wait: 0, idle: 0 }
+  for (const x of sim.sessions) c[x.state]++
+  for (const n of document.querySelectorAll('.n')) { const k = n.dataset.k; n.innerHTML = `<b>${c[k]}</b> ${WORD[k]}`; n.style.display = c[k] || k === 'work' ? '' : 'none' }
+  const cards = [...sim.sessions].sort((a, b) => ORDER[a.state] - ORDER[b.state]).map((x) => {
+    const chips = [...x.holds].map(([f, n]) => `<span class="chip ${f === x.focus ? 'focus' : ''} ${clash.get(`${x.repo}/${f}`) > Date.now() ? 'clash' : ''}" style="color:${x.color}"><span style="color:var(--fg)">${f.split('/').pop()}</span> <span style="color:var(--dim)">${n}</span></span>`).join('')
+    return `<div class="card ${x.state}"><div class="row"><span class="dot" style="background:${x.color}"></span><span class="name">${x.name}</span><span class="id">${x.id}</span><span class="pill ${x.state}">${WORD[x.state]}</span></div><div class="task">${x.task} · ${x.repo}</div><div class="chips">${chips || '<span class="id">holds no files</span>'}</div>${lastBy[x.id] ? `<div class="last">${lastBy[x.id]}</div>` : ''}</div>`
+  })
+  document.getElementById('cards').innerHTML = cards.join('')
+  for (const x of sim.sessions) { const r = TOK[x.id].ring; r.setAttribute('opacity', x.state === 'blocked' ? 1 : 0); r.classList.toggle('pulse', x.state === 'blocked'); TOK[x.id].g.style.opacity = x.state === 'idle' ? 0.45 : 1 }
+}
+const log = document.getElementById('log')
+sim.on((e) => {
+  const who = e.who || e.from
+  if (e.type === 'edit' || e.type === 'take') { const t = T[`${e.repo}/${e.file}`]; t && move(who, t.x + 18, t.y - 10) }
+  if (e.type === 'commit' || (e.type === 'state' && e.state === 'idle')) move(who, ...TOK[who].home)
+  if (e.type === 'clash') clash.set(`${e.repo}/${e.file}`, Date.now() + 2500)
+  if (e.type === 'msg') {
+    const [ax, ay] = TOK[e.from].at, [bx, by] = TOK[e.to].at
+    const p = el('path', { class: 'fly', stroke: sim.byId[e.from].color, d: `M${ax},${ay} Q${(ax + bx) / 2},${Math.min(ay, by) - 40} ${bx},${by}` }, svg)
+    setTimeout(() => p.remove(), 1600)
+  }
+  if (e.type !== 'edit' && e.type !== 'take') {
+    lastBy[who] = label(e, sim.byId)
+    const d = document.createElement('div'); d.textContent = label(e, sim.byId)
+    if (e.type === 'clash' || e.state === 'blocked') d.className = 'alert'
+    log.prepend(d); while (log.children.length > 12) log.lastChild.remove()
+  } else lastBy[who] = label(e, sim.byId)
+  paint(); rail()
+})
+paint(); rail()
+</script>
+</body>
+</html>
