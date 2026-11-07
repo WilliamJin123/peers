@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · board</title>
+<style>
+:root{--hud-bg:#fbf8f2e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2dccf;--hud-alert:#e8622c;--hud-font:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#e6e1d5}
+canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+import { THREE, stage, clay, box, flights, arc, ease, textPlane, sunlight } from './kit.js'
+
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · board' })
+const S = stage({ bg: '#e6e1d5', span: innerWidth < innerHeight ? 16 : 21 })
+const { scene } = S
+const fly = flights(scene, S.onFrame)
+const ALERT = '#e8622c'
+sunlight(scene, { r: 16 })
+
+// pointy-top axial hexes
+const DIRS = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]
+const world = (q, r) => new THREE.Vector3(Math.sqrt(3) * (q + r / 2), 0, 1.5 * r)
+const key = (q, r) => `${q},${r}`
+function spiral(c, n) {
+  const out = [c]
+  for (let k = 1; out.length < n; k++) {
+    let h = [c[0] + DIRS[4][0] * k, c[1] + DIRS[4][1] * k]
+    for (let d = 0; d < 6 && out.length < n; d++) for (let s = 0; s < k && out.length < n; s++) { out.push(h); h = [h[0] + DIRS[d][0], h[1] + DIRS[d][1]] }
+  }
+  return out
+}
+const CENTER = { wren: [-1, -3], peers: [4, -3], vireo: [-4, 3], engine: [1, 3] }
+const TONE = { wren: '#f4ebda', peers: '#eff0de', vireo: '#f6e8e2', engine: '#ecebe4' }
+const taken = new Set([key(0, 0)])
+const TILE = {}
+const hexGeo = new THREE.CylinderGeometry(0.93, 0.93, 1, 6)
+for (const r of REPOS) {
+  const fs = files(r.id), cells = spiral(CENTER[r.id], fs.length)
+  fs.forEach((f, i) => {
+    const [q, rr] = cells[i]; taken.add(key(q, rr))
+    const p = world(q, rr)
+    const g = new THREE.Group(); g.position.copy(p); scene.add(g)
+    const m = new THREE.Mesh(hexGeo, clay(TONE[r.id])); m.castShadow = m.receiveShadow = true; g.add(m)
+    const lbl = textPlane(f.split('/').pop(), { color: '#ffffff', w: 1.7, size: 56, weight: 700, font: 'ui-monospace,Menlo,monospace' }); lbl.position.set(0.12, 0, 0.05); g.add(lbl)
+    TILE[`${r.id}/${f}`] = { g, m, lbl, h: 0.35, cur: 0.35, p, tone: TONE[r.id], flash: 0, shake: 0 }
+  })
+  const c = world(...CENTER[r.id]), name = textPlane(r.id, { color: '#5b5346', w: 4.4, size: 84, weight: 700 })
+  const off = r.id === 'wren' ? 3.9 : 2.8
+  name.position.set(c.x - 1.6, 0.14, c.z + off); scene.add(name)
+}
+// the table: low filler hexes out to radius 7
+const fill = []
+for (let q = -8; q <= 8; q++) for (let r = -8; r <= 8; r++) if (Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) <= 6 && !taken.has(key(q, r))) fill.push(world(q, r))
+const inst = new THREE.InstancedMesh(hexGeo, clay('#c9bfa9'), fill.length)
+const mm = new THREE.Matrix4()
+fill.forEach((p, i) => { mm.compose(new THREE.Vector3(p.x, 0.06, p.z), new THREE.Quaternion(), new THREE.Vector3(1, 0.12, 1)); inst.setMatrixAt(i, mm) })
+inst.receiveShadow = true; scene.add(inst)
+// castle on the centre hex: main
+const castle = new THREE.Group(); scene.add(castle)
+const base = new THREE.Mesh(hexGeo, clay('#cfc2a6')); base.scale.y = 0.5; base.position.y = 0.25; base.castShadow = base.receiveShadow = true; castle.add(base)
+const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.58, 1.6, 20), clay('#e9e0cd')); tower.position.y = 1.3; tower.castShadow = true; castle.add(tower)
+for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2, c = box(0.18, 0.22, 0.18, clay('#e9e0cd')); c.position.set(Math.cos(a) * 0.48, 2.2, Math.sin(a) * 0.48); castle.add(c) }
+const flagM = clay('#2b2722', { emissive: '#6a9bcc', emissiveIntensity: 0 })
+const pole = box(0.04, 0.9, 0.04, clay('#6b5a44')); pole.position.y = 2.6; castle.add(pole)
+const flag = box(0.45, 0.28, 0.03, flagM); flag.position.set(0.24, 2.9, 0); castle.add(flag)
+const mainL = textPlane('main', { color: '#5b5346', w: 2.4, size: 84, weight: 700 }); mainL.position.set(0.1, 0.08, 1.45); scene.add(mainL)
+
+function paint() {
+  const holder = {}
+  for (const x of sim.sessions) for (const [f, n] of x.holds) holder[`${x.repo}/${f}`] = [x, n]
+  for (const k in TILE) {
+    const t = TILE[k], [x, n] = holder[k] || []
+    t.h = x ? 0.55 + Math.min(n / 45, 1.3) : 0.35
+    t.color = x ? x.color : t.tone
+    t.m.material.color.set(t.color)
+    t.lbl.material.color.set(x ? '#ffffff' : '#5b5346')
+  }
+}
+
+// pawns
+const P = {}
+const lane = {}
+function pawn(color) {
+  const g = new THREE.Group(), m = clay(color, { roughness: 0.55 })
+  const parts = [
+    [new THREE.CylinderGeometry(0.34, 0.38, 0.14, 24), 0.07],
+    [new THREE.CylinderGeometry(0.12, 0.3, 0.62, 24), 0.45],
+    [new THREE.CylinderGeometry(0.22, 0.22, 0.06, 24), 0.78],
+    [new THREE.SphereGeometry(0.23, 20, 16), 1.0],
+  ]
+  for (const [geo, y] of parts) { const p = new THREE.Mesh(geo, m); p.position.y = y; p.castShadow = true; g.add(p) }
+  return g
+}
+for (const x of sim.sessions) {
+  const i = (lane[x.repo] = (lane[x.repo] ?? -1) + 1)
+  const c = CENTER[x.repo], d = DIRS[(i * 3 + (c[1] < 0 ? 2 : 5)) % 6], R = x.repo === 'wren' ? 3 : 2
+  const home = world(c[0] + d[0] * R, c[1] + d[1] * R)
+  const g = pawn(x.color); scene.add(g)
+  const first = [...x.holds.keys()][0]
+  const t = first && TILE[`${x.repo}/${first}`]
+  g.position.copy(t ? t.p : home)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.66, 40), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0, depthWrite: false })); ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02; g.add(ring)
+  const bang = new THREE.Group(); const bar = box(0.12, 0.42, 0.12, clay(ALERT, { emissive: ALERT, emissiveIntensity: 0.5 })); bar.position.y = 0.28; const dot = box(0.12, 0.12, 0.12, bar.material); bang.add(bar, dot); bang.position.y = 1.55; bang.visible = false; g.add(bang)
+  P[x.id] = { x, g, ring, bang, home, tile: t, hop: null, carry: false, off: i ? 0.38 : -0.38 }
+}
+// one hop from where the pawn stands to `to`
+const hopTo = (p, to, then) => { p.hop = { a: p.g.position.clone(), b: to.clone(), k: 0, then } }
+const topOf = (t) => (t ? t.cur : 0.12)
+
+sim.on((e) => {
+  const p = P[e.who] || P[e.from]
+  if ((e.type === 'edit' || e.type === 'take') && !p.carry) { const t = TILE[`${e.repo}/${e.file}`]; p.tile = t; hopTo(p, t.p.clone().setX(t.p.x + p.off * 0.6)); t.bump = 1 }
+  if (e.type === 'commit') {
+    p.carry = true; p.tile = null
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.07, 24), clay('#e7c35a', { roughness: 0.35, metalness: 0.3 }))
+    const a = p.g.position.clone().setY(1.6), b = new THREE.Vector3(0, 2.4, 0)
+    fly(coin, 1.1, (k, o) => { o.position.copy(arc(a, b, ease(k), 3)); o.rotation.x = k * 12 }, () => { flagM.emissiveIntensity = 2.5; castle.userData.bump = 1 })
+    hopTo(p, p.home, () => (p.carry = false))
+  }
+  if (e.type === 'state' && e.state === 'idle' && !p.carry) { p.tile = null; hopTo(p, p.home) }
+  if (e.type === 'clash') { const t = TILE[`${e.repo}/${e.file}`]; if (t) { t.flash = 2.4; t.shake = 1.2 } }
+  if (e.type === 'msg') {
+    const card = box(0.5, 0.03, 0.34, clay('#fffdf8'))
+    const a = P[e.from].g.position.clone().setY(1.6), b = P[e.to].g.position.clone().setY(1.6)
+    fly(card, 1.3, (k, o) => { o.position.copy(arc(a, b, ease(k), 2.6)); o.rotation.y = k * 6 })
+  }
+  paint()
+})
+paint()
+
+S.onFrame((dt, t) => {
+  flagM.emissiveIntensity *= 0.95
+  const cb = (castle.userData.bump = Math.max(0, (castle.userData.bump || 0) - dt * 2))
+  castle.scale.setScalar(1 + Math.sin(cb * Math.PI) * 0.06)
+  flag.rotation.y = Math.sin(t * 3) * 0.25
+  for (const k in TILE) {
+    const T = TILE[k]
+    T.cur += (T.h - T.cur) * Math.min(1, dt * 4)
+    T.bump = Math.max(0, (T.bump || 0) - dt * 2.5)
+    const lift = Math.sin(T.bump * Math.PI) * 0.15
+    T.m.scale.y = T.cur; T.m.position.y = T.cur / 2 + lift; T.lbl.position.y = T.cur + 0.01 + lift
+    if (T.shake > 0) { T.shake -= dt; T.g.position.x = T.p.x + Math.sin(t * 50) * 0.05 * T.shake } else T.g.position.x = T.p.x
+    if (T.flash > 0) { T.flash -= dt; T.m.material.color.set(T.flash > 0 && Math.sin(t * 16) > 0 ? ALERT : T.color) }
+  }
+  for (const id in P) {
+    const p = P[id], x = p.x
+    if (p.hop) {
+      const h = p.hop; h.k = Math.min(1, h.k + dt / Math.max(0.35, h.a.distanceTo(h.b) / 9))
+      const e = ease(h.k), floor = topOf(p.tile)
+      p.g.position.lerpVectors(h.a, h.b, e)
+      p.g.position.y = (h.k < 1 ? Math.sin(Math.PI * h.k) * (0.8 + h.a.distanceTo(h.b) * 0.12) : 0) + floor * e
+      if (h.k >= 1) { p.hop = null; h.then?.() }
+    } else p.g.position.y = topOf(p.tile)
+    const ph = x.id.charCodeAt(4)
+    // work: small rocking; idle: lies down; blocked: ring + bobbing "!"
+    const lie = x.state === 'idle' && !p.hop ? Math.PI / 2 : 0
+    p.g.rotation.z += (lie - p.g.rotation.z) * 0.12
+    if (x.state === 'work' && !p.hop) p.g.rotation.x = Math.sin(t * 8 + ph) * 0.06
+    else p.g.rotation.x *= 0.9
+    p.ring.material.opacity = x.state === 'blocked' ? 0.6 + Math.sin(t * 6) * 0.3 : 0
+    p.bang.visible = x.state === 'blocked'
+    p.bang.position.y = 1.55 + Math.sin(t * 5) * 0.1
+    p.g.traverse((o) => { if (o.material && o !== p.ring && o.parent !== p.bang) { o.material.transparent = true; o.material.opacity = x.state === 'wait' ? 0.6 : 1 } })
+    const [sx, sy, vis] = S.project(p.g.position.clone().add(new THREE.Vector3(0, 1.5, 0)))
+    hud.place(id, sx, sy, vis)
+  }
+  hud.frame()
+})
+</script>
+</body>
+</html>

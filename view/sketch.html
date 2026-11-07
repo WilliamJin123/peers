@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · sketch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--hud-bg:#f6f3eae6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#dcd5c4;--hud-alert:#e8622c;--hud-font:"Patrick Hand",ui-sans-serif,sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#f3efe4}
+canvas{position:fixed;left:0;top:0}
+.hud{font-size:14px!important}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import rough from 'https://cdn.jsdelivr.net/npm/roughjs@4.6.6/bundled/rough.esm.js'
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+
+await Promise.all([document.fonts.load('600 20px Caveat'), document.fonts.load('12px "Patrick Hand"')])
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · sketchbook' })
+const ALERT = '#e8622c', INK = '#2b2722', PAPER = '#f3efe4'
+const cv = document.getElementById('c'), g = cv.getContext('2d'), rc = rough.canvas(cv)
+
+// logical page; fit into the window between hud bars
+const tall = innerWidth < innerHeight
+addEventListener('resize', () => { if ((innerWidth < innerHeight) !== tall) location.reload(); else fit() })
+const LW = tall ? 360 : 660, CELL = [62, 40]
+const ROOMS = tall
+  ? { wren: [8, 8, 344, 168], peers: [8, 206, 344, 88], vireo: [8, 324, 344, 88], engine: [8, 442, 344, 88] }
+  : { wren: [8, 8, 300, 168], peers: [344, 8, 308, 168], vireo: [8, 214, 300, 128], engine: [344, 214, 308, 128] }
+const LH = tall ? 540 : 350
+const MAIN = tall ? [300, 191] : [326, 195]
+let scale = 1, ox = 0, oy = 0
+function fit() {
+  const dpr = Math.min(devicePixelRatio, 2)
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr
+  cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px'
+  const top = 48, bot = 96
+  scale = Math.min((innerWidth - 20) / LW, (innerHeight - top - bot) / LH)
+  ox = (innerWidth - LW * scale) / 2; oy = top + (innerHeight - top - bot - LH * scale) / 2
+  g.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy)
+}
+fit()
+
+const SHEET = {}
+for (const r of REPOS) {
+  const [x, y, w] = ROOMS[r.id]
+  const cols = Math.floor((w - 20) / CELL[0])
+  files(r.id).forEach((f, i) => {
+    SHEET[`${r.id}/${f}`] = { x: x + 14 + (i % cols) * CELL[0], y: y + 34 + Math.floor(i / cols) * CELL[1], w: 56, h: 22, name: f.split('/').pop(), flash: 0 }
+  })
+}
+g.font = '12px "Patrick Hand"'
+for (const k in SHEET) SHEET[k].tw = g.measureText(SHEET[k].name).width
+const P = {}
+const lane = {}
+for (const x of sim.sessions) {
+  const i = (lane[x.repo] = (lane[x.repo] ?? -1) + 1)
+  const [rx, ry, rw, rh] = ROOMS[x.repo]
+  const home = [rx + rw - 22 - i * 26, ry + rh - 16]
+  const first = [...x.holds.keys()][0]
+  const s = first && SHEET[`${x.repo}/${first}`]
+  const at = s ? [s.x + s.w / 2 + (i ? 10 : -10), s.y + s.h + 9] : home
+  P[x.id] = { x, at: [...at], to: null, then: null, home, carry: false }
+}
+const go = (p, pt, then) => { p.to = pt; p.then = then }
+
+const fly = []
+let mainPulse = 0
+sim.on((e) => {
+  const p = P[e.who] || P[e.from]
+  if ((e.type === 'edit' || e.type === 'take') && !p.carry) { const s = SHEET[`${e.repo}/${e.file}`]; go(p, [s.x + s.w / 2 + (lane[e.repo] && p.home[0] % 2 ? 10 : -10), s.y + s.h + 9]); s.bump = 1 }
+  if (e.type === 'commit') { p.carry = true; go(p, [MAIN[0] + 14, MAIN[1] + 4], () => { mainPulse = 1.2; p.carry = false; go(p, p.home) }) }
+  if (e.type === 'state' && e.state === 'idle' && !p.carry) go(p, p.home)
+  if (e.type === 'clash') { const s = SHEET[`${e.repo}/${e.file}`]; if (s) s.flash = 2.6 }
+  if (e.type === 'msg') fly.push({ a: [...P[e.from].at], b: P[e.to], k: 0, color: P[e.from].x.color })
+})
+
+// boil: rough shapes re-seed a few times a second
+let boil = 1
+const o = (seed, extra = {}) => ({ seed: seed * 7 + boil, roughness: 1.3, bowing: 1.2, stroke: INK, strokeWidth: 1.3, ...extra })
+let last = performance.now(), acc = 0
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now; const T = now / 1000
+  acc += dt; if (acc > 0.16) { acc = 0; boil = (boil % 3) + 1 }
+  g.save(); g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = PAPER; g.fillRect(0, 0, cv.width, cv.height); g.restore()
+  let n = 0
+  // rooms
+  for (const r of REPOS) {
+    const [x, y, w, h] = ROOMS[r.id]
+    rc.rectangle(x, y, w, h, o(++n, { strokeWidth: 1.8 }))
+    g.font = '600 20px Caveat'; g.textAlign = 'left'; g.fillStyle = '#8a7f6c'; g.fillText(r.id, x + 10, y + 22)
+    const [hx, hy] = [x + w - 74, y + h - 26]
+    rc.rectangle(hx, hy, 64, 20, o(++n, { fill: '#e2d6bd', fillStyle: 'cross-hatch', hachureGap: 6, strokeWidth: 1 }))
+  }
+  // main mailbox
+  mainPulse = Math.max(0, mainPulse - dt)
+  rc.circle(MAIN[0], MAIN[1], 26 + mainPulse * 14, o(++n, { fill: '#2b2722', fillStyle: 'solid', stroke: mainPulse > 0 ? '#6a9bcc' : INK, strokeWidth: 1.5 + mainPulse * 2 }))
+  g.font = '600 15px Caveat'; g.fillStyle = PAPER; g.textAlign = 'center'; g.fillText('main', MAIN[0], MAIN[1] + 4)
+  // files
+  const holder = {}
+  for (const x of sim.sessions) for (const [f] of x.holds) holder[`${x.repo}/${f}`] = x
+  g.font = '12px "Patrick Hand"'
+  for (const k in SHEET) {
+    const s = SHEET[k], hx = holder[k]
+    s.bump = Math.max(0, (s.bump || 0) - dt * 2.5)
+    const lift = Math.sin(s.bump * Math.PI) * 3
+    let flash = false
+    if (s.flash > 0) { s.flash -= dt; flash = Math.sin(T * 14) > 0 }
+    const focus = hx && hx.focus === k.slice(k.indexOf('/') + 1)
+    rc.rectangle(s.x, s.y - lift, s.w, s.h, o(++n, {
+      fill: hx ? hx.color : undefined, fillStyle: focus ? 'solid' : 'hachure', hachureGap: 3.5, fillWeight: 1.2,
+      stroke: flash ? ALERT : INK, strokeWidth: flash ? 3 : 1.2,
+    }))
+    g.fillStyle = focus ? '#fff' : INK; g.textAlign = 'center'; g.font = `${Math.min(12, (12 * (s.w - 6)) / s.tw)}px "Patrick Hand"`; g.fillText(s.name, s.x + s.w / 2, s.y + 15 - lift)
+    if (flash) rc.linearPath([[s.x - 4, s.y - 6], [s.x + 8, s.y + 4], [s.x + 2, s.y + 10], [s.x + 14, s.y + 18]], o(++n, { stroke: ALERT, strokeWidth: 2.4 }))
+  }
+  // messages: dashed pencil arc with a paper plane
+  for (let i = fly.length - 1; i >= 0; i--) {
+    const f = fly[i]; f.k += dt / 1.5
+    if (f.k >= 1) { fly.splice(i, 1); continue }
+    const [ax, ay] = f.a, [bx, by] = f.b.at, cx = (ax + bx) / 2, cy = Math.min(ay, by) - 50
+    const q = (u) => [(1 - u) ** 2 * ax + 2 * (1 - u) * u * cx + u * u * bx, (1 - u) ** 2 * ay + 2 * (1 - u) * u * cy + u * u * by]
+    const pts = []; for (let u = 0; u <= f.k; u += 0.05) pts.push(q(u))
+    if (pts.length > 1) { g.setLineDash([4, 5]); rc.curve(pts, o(++n, { stroke: f.color, strokeWidth: 1.4, roughness: 0.6 })); g.setLineDash([]) }
+    const [px, py] = q(f.k), [qx, qy] = q(Math.min(1, f.k + 0.02)), a = Math.atan2(qy - py, qx - px)
+    const tri = [[px + Math.cos(a) * 8, py + Math.sin(a) * 8], [px + Math.cos(a + 2.5) * 6, py + Math.sin(a + 2.5) * 6], [px + Math.cos(a - 2.5) * 6, py + Math.sin(a - 2.5) * 6]]
+    rc.polygon(tri, o(++n, { fill: '#fff', fillStyle: 'solid', strokeWidth: 1 }))
+  }
+  // people
+  const m = (a) => [ox + a[0] * scale, oy + a[1] * scale]
+  for (const id in P) {
+    const p = P[id], x = p.x
+    let moving = false
+    if (p.to) {
+      const dx = p.to[0] - p.at[0], dy = p.to[1] - p.at[1], d = Math.hypot(dx, dy), sp = 70 * dt
+      if (d <= sp) { p.at = [...p.to]; p.to = null; const f = p.then; p.then = null; f?.() }
+      else { p.at[0] += (dx / d) * sp; p.at[1] += (dy / d) * sp; moving = true }
+    }
+    const ph = x.id.charCodeAt(4)
+    const bob = moving ? Math.abs(Math.sin(T * 12 + ph)) * 2.5 : x.state === 'work' ? Math.sin(T * 6 + ph) * 0.8 : 0
+    const [cx, cy] = [p.at[0], p.at[1] - bob]
+    g.globalAlpha = x.state === 'idle' ? 0.55 : 1
+    if (x.state === 'blocked') rc.circle(cx, cy, 34 + Math.sin(T * 6) * 3, o(++n, { stroke: ALERT, strokeWidth: 2.6, roughness: 2 }))
+    rc.ellipse(cx, cy + 9, 18, 5, o(++n, { stroke: 'none', fill: '#00000020', fillStyle: 'solid' }))
+    rc.circle(cx, cy, 18, o(++n, { fill: x.color, fillStyle: 'solid', strokeWidth: 1.4 }))
+    g.fillStyle = INK; g.beginPath(); g.arc(cx - 3, cy - 2, 1.3, 0, 7); g.arc(cx + 3, cy - 2, 1.3, 0, 7); g.fill()
+    if (p.carry) rc.rectangle(cx - 6, cy - 22, 12, 9, o(++n, { fill: '#d8c39c', fillStyle: 'solid' }))
+    g.font = '600 18px Caveat'; g.textAlign = 'left'
+    if (x.state === 'blocked') { g.fillStyle = ALERT; g.fillText('!', cx + 13, cy - 8 + Math.sin(T * 8) * 2) }
+    if (x.state === 'idle') { g.fillStyle = '#8a7f6c'; g.fillText('z', cx + 10, cy - 8 - (T * 6 % 6)); g.font = '600 13px Caveat'; g.fillText('z', cx + 18, cy - 16 - (T * 6 % 6)) }
+    if (x.state === 'wait') { g.fillStyle = '#8a7f6c'; g.fillText('…', cx + 11, cy - 6) }
+    if (x.state === 'work' && !moving) rc.line(cx + 9, cy + 4, cx + 14 + Math.sin(T * 20 + ph) * 2, cy + 8, o(++n, { strokeWidth: 1.6 }))
+    g.globalAlpha = 1; g.textAlign = 'center'
+    const [sx, sy] = m([cx, cy - 13])
+    hud.place(id, sx, sy)
+  }
+  hud.frame()
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

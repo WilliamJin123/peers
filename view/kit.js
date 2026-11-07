@@ -132,3 +132,39 @@ export const arc = (a, b, k, h) => new THREE.Vector3(
   a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k + Math.sin(Math.PI * k) * h, a.z + (b.z - a.z) * k)
 
 export const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2)
+
+// flat text lying on the ground (canvas texture); w world units wide
+export function textPlane(str, { size = 64, color = '#8c8374', w = 4, weight = 600, font = 'ui-sans-serif,-apple-system,sans-serif' } = {}) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128
+  const g = c.getContext('2d'); g.font = `${weight} ${size}px ${font}`; g.fillStyle = color; g.textBaseline = 'middle'; g.fillText(str, 8, 64)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w / 4), new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }))
+  m.rotation.x = -Math.PI / 2
+  return m
+}
+
+// warm key light + soft shadows sized to `r`
+export function sunlight(scene, { r = 17, sky = '#fff7ec', ground = '#d6c8af', hemi = 1.25, key = 1.7 } = {}) {
+  scene.add(new THREE.HemisphereLight(sky, ground, hemi))
+  const sun = new THREE.DirectionalLight('#fff1dc', key)
+  sun.position.set(10, 22, 6)
+  sun.castShadow = true
+  sun.shadow.mapSize.set(2048, 2048)
+  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r })
+  sun.shadow.radius = 6
+  scene.add(sun)
+  return sun
+}
+
+// pose a bean by session state; call each frame. returns nothing
+export function pose(b, x, t, moving, at) {
+  const u = b.userData, p = x.id.charCodeAt(4) * 0.7
+  let y = 0, lean = 0, handY = 0.65
+  if (moving) y = Math.abs(Math.sin(t * 12 + p)) * 0.12
+  else if (x.state === 'work' && at) { y = Math.sin(t * 7 + p) * 0.03; lean = 0.12; handY = 0.75 + Math.abs(Math.sin(t * 14 + p)) * 0.08 }
+  else if (x.state === 'blocked') { y = Math.abs(Math.sin(t * 5 + p)) * 0.16; handY = 1.55 + Math.sin(t * 10) * 0.08 }
+  else if (x.state === 'idle' && !moving) { y = -0.15; lean = -0.2 }
+  u.body.position.y = 0.7 + y
+  u.body.rotation.x += (lean - u.body.rotation.x) * 0.15
+  u.hand.position.y += (handY + y - u.hand.position.y) * 0.25
+}
