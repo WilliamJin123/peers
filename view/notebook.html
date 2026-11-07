@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · notebook</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#2b2722;--dim:#7d7262;--alert:#e8622c;--paper:#fbf8ef;--rule:#d5e1ee}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--paper)}
+body{background:var(--paper) repeating-linear-gradient(0deg,transparent 0 27px,var(--rule) 27px 28px);font:16px/1.4 "Patrick Hand",ui-sans-serif,sans-serif;color:var(--ink)}
+body::before{content:"";position:fixed;top:0;bottom:0;left:58px;width:2px;background:#f0b7b0;pointer-events:none}
+.page{padding:18px 18px 18px 76px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:22px;max-width:1280px}
+h1{font:700 34px/1 Caveat,cursive;margin:0 0 4px;grid-column:1/-1}
+.sum{grid-column:1/-1;color:var(--dim);margin-top:-12px}
+.sum b{color:var(--ink)} .sum .a{color:var(--alert)}
+.notes{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:22px 18px;align-content:start}
+.note{position:relative;padding:12px 14px 12px;min-height:150px;box-shadow:0 1px 1px #0000001a,0 6px 14px -6px #00000030;transition:transform .4s}
+.note:nth-child(3n+1){transform:rotate(-1.4deg)} .note:nth-child(3n+2){transform:rotate(1deg)} .note:nth-child(3n){transform:rotate(-.4deg)}
+.note::before{content:"";position:absolute;top:-9px;left:50%;width:70px;height:20px;transform:translateX(-50%) rotate(-2deg);background:#ffffff8c;box-shadow:0 1px 2px #0000001a}
+.note.blocked::before{background:color-mix(in srgb,var(--alert) 70%,#fff)}
+.note.blocked{animation:nudge 1.2s ease-in-out infinite}
+@keyframes nudge{0%,100%{translate:0 0}50%{translate:0 -3px}}
+.note h2{font:700 25px/1 Caveat,cursive;margin:0}
+.st{font:500 20px/1 Caveat,cursive;color:var(--dim)}
+.blocked .st{color:var(--alert);font-weight:700}
+.why{color:var(--alert)}
+.task{color:var(--dim);margin:2px 0 6px}
+.fig{position:absolute;right:10px;top:10px;width:58px;height:62px}
+ul{list-style:none;margin:0;padding:0;font-size:15px}
+li{display:flex;gap:6px;align-items:baseline}
+li .n{color:var(--dim);margin-left:auto;font-size:13px}
+li.on b{text-decoration:underline wavy;text-underline-offset:3px}
+li.clash{color:var(--alert)} li.clash::after{content:"✗ clash";font-size:13px}
+.stamp{position:absolute;right:14px;bottom:10px;font:700 22px/1 Caveat,cursive;color:#3f7f52;border:2px solid currentColor;border-radius:6px;padding:0 6px;transform:rotate(-12deg) scale(1.6);opacity:0;transition:transform .25s,opacity .25s}
+.stamp.on{opacity:.85;transform:rotate(-12deg) scale(1)}
+.margin h3{font:700 24px/1 Caveat,cursive;margin:0 0 6px}
+.margin div{line-height:28px;color:var(--dim)}
+.margin div.alert{color:var(--alert)}
+.margin div .t{font-size:13px;margin-right:6px}
+canvas{position:absolute;left:0;top:0;pointer-events:none}
+@media (max-width:760px){.page{grid-template-columns:1fr;padding-left:40px;padding-right:12px}body::before{left:28px}.notes{grid-template-columns:1fr 1fr;gap:16px 10px}.note{min-height:170px;padding:10px}.fig{width:40px;height:44px;right:6px;top:8px}.note h2{font-size:21px;padding-right:38px}.task{display:none}ul{font-size:13px}li .n{display:none}}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>peers · notebook</h1>
+  <div class="sum" id="sum"></div>
+  <div class="notes" id="notes"></div>
+  <div class="margin"><h3>what happened</h3><div id="log"></div></div>
+</div>
+<canvas id="c"></canvas>
+<script type="module">
+import rough from 'https://cdn.jsdelivr.net/npm/roughjs@4.6.6/bundled/rough.esm.js'
+import { createSim, label } from './sim.js'
+
+await Promise.all([document.fonts.load('700 20px Caveat'), document.fonts.load('12px "Patrick Hand"')])
+const sim = createSim()
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c])
+const mix = (hex, k) => { const n = parseInt(hex.slice(1), 16); return `rgb(${[(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.round(v * (1 - k) + 255 * k))})` }
+const WORD = { work: 'working', blocked: 'needs you!', wait: 'waiting…', idle: 'idle' }
+const ORDER = { blocked: 0, wait: 1, work: 2, idle: 3 }
+
+// doodle per pose, inline svg, two frames
+const D = {
+  work: (c, f) => `<circle cx="22" cy="20" r="9" fill="${c}"/><path d="M22 29v16M22 34l${f ? 12 : 10} ${f ? 4 : 6}M22 45l-6 12M22 45l6 12"/><rect x="34" y="28" width="20" height="14"/><path d="M38 ${f ? 46 : 47}h12"/>`,
+  blocked: (c, f) => `<circle cx="28" cy="24" r="9" fill="${c}"/><path d="M28 33v14M28 37l-9 ${f ? -12 : -14}M28 37l9 ${f ? -14 : -12}M28 47l-6 12M28 47l6 12"/><text x="44" y="16" fill="#e8622c" stroke="none" font-size="20" font-family="Caveat" font-weight="700">!</text>`,
+  wait: (c, f) => `<circle cx="26" cy="22" r="9" fill="${c}"/><path d="M26 31v15M26 36l-8 6M26 36l8 6M26 46l-6 12M26 46l6 12"/><text x="40" y="20" fill="#7d7262" stroke="none" font-size="20" font-family="Caveat">${f ? '…' : '..'}</text>`,
+  idle: (c, f) => `<path d="M6 50h48v8H6z" fill="#e2d6bd"/><ellipse cx="28" cy="44" rx="16" ry="6" fill="${c}"/><text x="${f ? 42 : 44}" y="${f ? 26 : 30}" fill="#7d7262" stroke="none" font-size="${f ? 18 : 14}" font-family="Caveat">z</text>`,
+}
+const clash = new Map(), why = {}, stamp = {}, log = [], arrows = []
+let fr = 0
+const N = {}
+for (const x of sim.sessions) {
+  const el = document.createElement('div'); el.className = 'note'; el.style.background = mix(x.color, 0.72)
+  $('notes').append(el); N[x.id] = el
+}
+function draw() {
+  const now = Date.now()
+  // notes keep their place; who needs you gets the tape + nudge
+  for (const x of sim.sessions) {
+    const el = N[x.id]
+    el.className = `note ${x.state}`
+    const items = [...x.holds].map(([f, n]) => `<li class="${f === x.focus ? 'on' : ''} ${clash.get(`${x.repo}/${f}`) > now ? 'clash' : ''}"><span>${f === x.focus ? '✎' : '·'}</span><b>${esc(f.split('/').pop())}</b><span class="n">${n} lines</span></li>`).join('')
+    const html = `<svg class="fig" viewBox="0 0 60 64" fill="none" stroke="#2b2722" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${D[x.state](x.color, fr % 2)}</svg><h2>${esc(x.name)}</h2><div class="st">${WORD[x.state]}</div>${x.state === 'blocked' && why[x.id] ? `<div class="why">${esc(why[x.id])}</div>` : ''}<div class="task">${esc(x.task)} · ${x.repo}</div><ul>${items || '<li style="color:var(--dim)">no files held</li>'}</ul><div class="stamp ${stamp[x.id] > now ? 'on' : ''}">shipped</div>`
+    if (el.innerHTML !== html) el.innerHTML = html
+  }
+  const c = { work: 0, blocked: 0, wait: 0, idle: 0 }; for (const x of sim.sessions) c[x.state]++
+  $('sum').innerHTML = `<b>${sim.sessions.length}</b> sessions · <b>${c.work}</b> working${c.blocked ? ` · <span class="a"><b>${c.blocked}</b> needs you</span>` : ''}${c.wait ? ` · ${c.wait} waiting` : ''}${c.idle ? ` · ${c.idle} idle` : ''}`
+  $('log').innerHTML = log.map(([t, s, a]) => `<div class="${a ? 'alert' : ''}"><span class="t">${t}</span>${esc(s)}</div>`).join('')
+}
+sim.on((e) => {
+  if (e.type === 'clash') clash.set(`${e.repo}/${e.file}`, Date.now() + 2600)
+  if (e.type === 'state' && e.state === 'blocked') why[e.who] = e.why
+  if (e.type === 'commit') stamp[e.who] = Date.now() + 1800
+  if (e.type === 'msg') arrows.push({ a: e.from, b: e.to, k: 0, c: sim.byId[e.from].color })
+  if (e.type !== 'edit' && e.type !== 'take') { log.unshift([new Date().toTimeString().slice(0, 5), label(e, sim.byId), e.type === 'clash' || e.state === 'blocked']); log.length = Math.min(log.length, innerWidth < 760 ? 5 : 14) }
+  draw()
+})
+setInterval(() => { fr++; draw() }, 500)
+draw()
+
+// message arrows drawn in pencil between notes
+const cv = $('c'), g = cv.getContext('2d'), rc = rough.canvas(cv)
+let boil = 1, acc = 0, last = performance.now()
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now
+  acc += dt; if (acc > 0.16) { acc = 0; boil = (boil % 3) + 1 }
+  const W = document.documentElement.scrollWidth, H = document.documentElement.scrollHeight, dpr = Math.min(devicePixelRatio, 2)
+  if (cv.width !== W * dpr || cv.height !== H * dpr) { cv.width = W * dpr; cv.height = H * dpr; cv.style.width = W + 'px'; cv.style.height = H + 'px' }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H)
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const ar = arrows[i]; ar.k += dt / 1.6
+    if (ar.k >= 1.4) { arrows.splice(i, 1); continue }
+    const ra = N[ar.a].getBoundingClientRect(), rb = N[ar.b].getBoundingClientRect()
+    const ax = ra.left + ra.width / 2 + scrollX, ay = ra.top + 30 + scrollY, bx = rb.left + rb.width / 2 + scrollX, by = rb.top + 30 + scrollY
+    const cx = (ax + bx) / 2, cy = Math.min(ay, by) - 40, k = Math.min(ar.k, 1)
+    const q = (u) => [(1 - u) ** 2 * ax + 2 * (1 - u) * u * cx + u * u * bx, (1 - u) ** 2 * ay + 2 * (1 - u) * u * cy + u * u * by]
+    const pts = []; for (let u = 0; u <= k; u += 0.05) pts.push(q(u))
+    g.globalAlpha = ar.k > 1 ? Math.max(0, 1 - (ar.k - 1) / 0.4) : 1
+    if (pts.length > 1) rc.curve(pts, { seed: boil + i, stroke: ar.c, strokeWidth: 2.2, roughness: 1.2 })
+    if (k >= 1) { const [px, py] = q(1), [qx, qy] = q(0.95), a = Math.atan2(py - qy, px - qx); rc.linearPath([[px - Math.cos(a - 0.5) * 12, py - Math.sin(a - 0.5) * 12], [px, py], [px - Math.cos(a + 0.5) * 12, py - Math.sin(a + 0.5) * 12]], { seed: boil, stroke: ar.c, strokeWidth: 2.2 }) }
+    g.globalAlpha = 1
+  }
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

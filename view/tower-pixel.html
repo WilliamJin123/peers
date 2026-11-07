@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · pixel tower</title>
+<style>
+:root{--hud-bg:#241f2ee6;--hud-fg:#f4ead8;--hud-dim:#a89cb4;--hud-line:#4a3f5c;--hud-alert:#ff8a3d;--hud-font:ui-monospace,"SF Mono",Menlo,monospace}
+html,body{margin:0;height:100%;overflow:hidden;background:#1b1724}
+canvas{position:absolute;image-rendering:pixelated;image-rendering:crisp-edges}
+.lbl{position:absolute;font:600 11px ui-monospace,Menlo,monospace;color:#e8dcc4;opacity:.8;letter-spacing:.06em;pointer-events:none;text-transform:uppercase}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · pixel tower' })
+const cv = document.getElementById('c'), g = cv.getContext('2d')
+const tall = innerWidth < innerHeight
+addEventListener('resize', () => location.reload())
+const ALERT = '#ff8a3d', CLASH = '#ff3d5a'
+const R = (c, x, y, w, h) => { g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), w, h) }
+
+// cutaway: floor per repo, lounge left, lift right, mailbox on the roof
+const LW = tall ? 124 : 236
+const X0 = 4, X1 = LW - 4, LOUNGE = X0 + 20, SHAFT = X1 - 9, F0 = LOUNGE + 6, F1 = SHAFT - 10, CW = 13
+const ROOF = 22
+const F = {}, FOLD = {}
+let y = ROOF
+for (const r of REPOS) {
+  const fs = files(r.id), cols = Math.floor((F1 - F0) / CW), rows = Math.ceil(fs.length / cols)
+  const h = 12 + rows * 13 + 14
+  F[r.id] = { y, h, base: y + h - 3 }
+  fs.forEach((f, i) => (FOLD[`${r.id}/${f}`] = { x: F0 + (i % cols) * CW, y: y + 9 + Math.floor(i / cols) * 13, lift: 0, flash: 0 }))
+  y += h
+}
+const LH = y + 6
+cv.width = LW; cv.height = LH
+let scale = 1, ox = 0, oy = 0
+const lbls = []
+const lbl = (t, x, yy) => { const d = document.createElement('div'); d.className = 'lbl'; d.textContent = t; document.body.append(d); lbls.push([d, x, yy]) }
+for (const r of REPOS) lbl(r.id, X0 + 2, F[r.id].y + 2)
+lbl('main', LW / 2 + 8, ROOF - 13)
+;(() => {
+  scale = Math.min((innerWidth - 16) / LW, (innerHeight - 130) / LH)
+  scale = scale >= 2 ? Math.floor(scale) : scale
+  cv.style.width = `${LW * scale}px`; cv.style.height = `${LH * scale}px`
+  ox = (innerWidth - LW * scale) / 2; oy = Math.max(44, (innerHeight - 90 - LH * scale) / 2 + 20)
+  cv.style.left = `${ox}px`; cv.style.top = `${oy}px`
+  for (const [d, x, yy] of lbls) { d.style.left = `${ox + x * scale}px`; d.style.top = `${oy + yy * scale + 3}px` }
+})()
+
+const MB = [LW / 2, ROOF]
+const W = {}, slot = {}
+for (const x of sim.sessions) {
+  const i = (slot[x.repo] = (slot[x.repo] ?? -1) + 1)
+  const home = LOUNGE - 5 - i * 7, base = F[x.repo].base
+  const first = [...x.holds.keys()][0], d = first && FOLD[`${x.repo}/${first}`]
+  const px = d ? d.x + 5 + (i ? 3 : -3) : home
+  W[x.id] = { x, pos: [px, base], path: [], home, carry: false, ride: false, flip: false, shake: 0 }
+}
+const go = (w, pts) => (w.path = pts)
+const stand = (w, d) => go(w, [[d.x + 5 + (w.x.id.charCodeAt(5) % 2 ? 3 : -3), F[w.x.repo].base]])
+let flag = 0
+const msgs = []
+sim.on((e) => {
+  const w = W[e.who] || W[e.from]
+  if ((e.type === 'edit' || e.type === 'take') && !w.carry) { const d = FOLD[`${e.repo}/${e.file}`]; stand(w, d); d.lift = 1 }
+  if (e.type === 'commit' && !w.carry) {
+    w.carry = true
+    const b = F[w.x.repo].base
+    go(w, [[SHAFT, b], [SHAFT, ROOF, 1], [MB[0] + 9, ROOF], [MB[0] + 9, ROOF, 0, 1], [SHAFT, ROOF], [SHAFT, b, 1], [SHAFT - 12, b, 0, 0, 1]])
+  }
+  if (e.type === 'state' && e.state === 'idle' && !w.carry) go(w, [[w.home, F[w.x.repo].base]])
+  if (e.type === 'clash') { const d = FOLD[`${e.repo}/${e.file}`]; if (d) d.flash = 2.4; w.shake = W[e.other].shake = 1.2 }
+  if (e.type === 'msg') msgs.push({ a: [...w.pos], b: W[e.to], k: 0 })
+})
+
+function scene(t) {
+  R('#1b1724', 0, 0, LW, LH)
+  // roof, mailbox, antenna
+  R('#5c4d78', X0 - 2, ROOF - 2, X1 - X0 + 4, 2)
+  R('#8c7aa8', MB[0] - 1, ROOF - 5, 2, 5); R('#2a2338', MB[0] - 5, ROOF - 12, 10, 7); R(flag > 0 && (t * 10 | 0) % 2 ? '#ffd27a' : '#8c7aa8', MB[0] - 4, ROOF - 11, 8, 2)
+  R(flag > 0 ? '#ff5a3d' : '#5c4d78', MB[0] + 5, flag > 0 ? ROOF - 15 : ROOF - 9, 1, flag > 0 ? 5 : 1); if (flag > 0) R('#ff5a3d', MB[0] + 6, ROOF - 15, 3, 2)
+  R('#5c4d78', SHAFT, ROOF - 9, 1, 7); if ((t * 2 | 0) % 2) R('#ff5a3d', SHAFT, ROOF - 10, 1, 1)
+  const holder = {}
+  for (const x of sim.sessions) for (const [f] of x.holds) holder[`${x.repo}/${f}`] = x
+  for (const r of REPOS) {
+    const { y: fy, h } = F[r.id]
+    for (let i = X0; i < X1; i += 4) for (let j = fy; j < fy + h - 3; j += 4) R(((i - X0 + j - fy) / 4) % 2 ? '#3d3550' : '#433a58', i, j, 4, 4)
+    R('#5c4d78', X0, fy + h - 3, X1 - X0, 3); R('#6e5d8f', X0, fy + h - 3, X1 - X0, 1)
+    R('#2a2338', X0 - 1, fy, 1, h); R('#2a2338', X1, fy, 1, h)
+    // couch + plant
+    R('#7a4a5c', X0 + 2, fy + h - 8, 14, 5); R('#93596f', X0 + 2, fy + h - 10, 14, 3)
+    R('#3f7a4a', LOUNGE - 3, fy + h - 9, 4, 4); R('#a0644a', LOUNGE - 2, fy + h - 5, 3, 2)
+    // shaft
+    R('#2a2338', SHAFT - 5, fy + 2, 10, h - 5); for (let j = fy + 4; j < fy + h - 4; j += 3) R('#4a3f5c', SHAFT, j, 1, 1)
+    for (const f of files(r.id)) {
+      const d = FOLD[`${r.id}/${f}`], hx = holder[`${r.id}/${f}`]
+      d.lift = Math.max(0, d.lift - 1 / 30); d.flash = Math.max(0, d.flash - 1 / 60)
+      const ly = d.y - Math.round(Math.sin(d.lift * Math.PI) * 2)
+      const red = d.flash > 0 && (t * 10 | 0) % 2
+      const c = red ? CLASH : hx ? hx.color : '#6b5f80', top = red ? CLASH : hx ? hx.color : '#857898'
+      R('#14111b', d.x, ly + 1, 10, 8)
+      R(top, d.x, ly, 4, 2); R(c, d.x, ly + 1, 10, 7); R('#ffffff30', d.x, ly + 2, 10, 1)
+      if (hx && hx.focus === f) R('#ffffff', d.x + 4, ly + 4, 2, 2)
+    }
+  }
+  R('#5c4d78', X0 - 3, LH - 6, X1 - X0 + 6, 3)
+}
+
+function guy(w, t) {
+  const s = w.x, [x, y] = w.pos, moving = w.path.length > 0
+  if (w.ride) { R('#8c7aa8', x - 5, y - 13, 10, 13); R('#2a2338', x - 4, y - 12, 8, 11) }
+  const bob = moving && !w.ride ? (t * 10 | 0) % 2 : s.state === 'blocked' ? Math.round(Math.abs(Math.sin(t * 6)) * 2) : s.state === 'idle' && !moving ? -1 : 0
+  const sx = x + (w.shake > 0 ? ((t * 40 | 0) % 2 ? 1 : -1) : 0), sy = y - bob
+  R('#00000055', x - 3, y, 7, 1)
+  R(s.color, sx - 3, sy - 9, 7, 9); R('#ffffff33', sx - 2, sy - 8, 2, 3)
+  const e = w.flip ? -1 : 0
+  if (s.state === 'idle' && !moving) { R('#1b1724', sx - 1 + e, sy - 6, 2, 1); R('#1b1724', sx + 2 + e, sy - 6, 1, 1) }
+  else { R('#1b1724', sx - 1 + e, sy - 6, 1, 1); R('#1b1724', sx + 1 + e, sy - 6, 1, 1) }
+  if (s.state === 'blocked') R(s.color, sx + 4, sy - 13 + ((t * 8 | 0) % 2), 2, 5)
+  else if (s.state === 'work' && !moving) R(s.color, sx + 3, sy - 5 + ((t * 12 | 0) % 2), 2, 2)
+  if (w.carry) { R('#c9a46a', sx - 3, sy - 14, 7, 5); R(s.color, sx - 3, sy - 12, 7, 1) }
+  const b = s.state === 'blocked' ? ALERT : s.state === 'wait' ? '#f4ead8' : null
+  if (b && !w.ride) {
+    const by = sy - 21
+    R('#f4ead8', sx - 4, by, 9, 8); R('#f4ead8', sx - 1, by + 8, 2, 2)
+    if (s.state === 'blocked') { R(ALERT, sx, by + 1, 1, 4); R(ALERT, sx, by + 6, 1, 1) }
+    else for (const k of [-2, 0, 2]) R('#241f2e', sx + k, by + 5, 1, 1)
+  }
+  if (s.state === 'idle' && !moving) { const k = (t * 1.5) % 1; g.globalAlpha = 1 - k; R('#a89cb4', sx + 3, sy - 12 - k * 5, 3, 1); R('#a89cb4', sx + 4, sy - 11 - k * 5, 1, 1); R('#a89cb4', sx + 3, sy - 10 - k * 5, 3, 1); g.globalAlpha = 1 }
+}
+
+let last = performance.now()
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05), t = now / 1000; last = now
+  flag = Math.max(0, flag - dt * 0.6)
+  scene(t)
+  for (const id in W) {
+    const w = W[id], n = w.path[0]
+    if (w.shake > 0) w.shake -= dt
+    if (n) {
+      const dx = n[0] - w.pos[0], dy = n[1] - w.pos[1], d = Math.hypot(dx, dy), sp = (n[2] ? 70 : 32) * dt
+      w.ride = !!n[2]
+      if (dx) w.flip = dx < 0
+      if (d <= sp) { w.pos = [n[0], n[1]]; w.path.shift(); if (n[3]) { flag = 1.6; w.carry = false } if (n[4]) w.carry = false; if (!w.path.length) w.ride = false }
+      else w.pos = [w.pos[0] + (dx / d) * sp, w.pos[1] + (dy / d) * sp]
+    }
+    if (!w.path.length && w.x.state === 'idle' && Math.abs(w.pos[0] - w.home) > 1 && !w.carry) go(w, [[w.home, F[w.x.repo].base]])
+    guy(w, t)
+  }
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]; m.k += dt / 1.3
+    if (m.k >= 1) { msgs.splice(i, 1); continue }
+    const b = m.b.pos, x = m.a[0] + (b[0] - m.a[0]) * m.k, yy = m.a[1] - 12 + (b[1] - m.a[1]) * m.k - Math.sin(Math.PI * m.k) * 18
+    R('#f4ead8', x - 3, yy - 2, 6, 4); R('#c9b28a', x - 3, yy - 2, 6, 1); R('#c9b28a', x - 1, yy, 2, 1)
+  }
+  for (const id in W) { const w = W[id]; hud.place(id, ox + w.pos[0] * scale, oy + (w.pos[1] - 23) * scale - 4) }
+  hud.frame()
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

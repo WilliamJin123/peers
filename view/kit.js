@@ -5,7 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 export { THREE }
 
 // iso ortho stage; `span` = world units that must fit the short side
-export function stage({ bg, span = 26, shadows = true, iso = true, fov = 0 } = {}) {
+export function stage({ bg, span = 26, shadows = true, iso = true, fov = 0, inset } = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
   renderer.shadowMap.enabled = shadows
@@ -25,7 +25,10 @@ export function stage({ bg, span = 26, shadows = true, iso = true, fov = 0 } = {
   controls.minZoom = 0.6
   controls.maxZoom = 3
   const fit = () => {
-    const w = innerWidth, h = innerHeight, a = w / h
+    // inset: () => {right, bottom} px kept free for a dock
+    const ins = inset?.() || { right: 0, bottom: 0 }
+    const w = innerWidth - ins.right, h = innerHeight - ins.bottom, a = w / h
+    size.w = w; size.h = h
     const half = span / 2
     // portrait: fit width; landscape: fit height
     const hh = a < 1 ? half / a : half
@@ -36,6 +39,7 @@ export function stage({ bg, span = 26, shadows = true, iso = true, fov = 0 } = {
     post?.setSize(w, h)
   }
   let post = null
+  const size = { w: innerWidth, h: innerHeight }
   fit()
   addEventListener('resize', fit)
   const frames = new Set()
@@ -56,7 +60,7 @@ export function stage({ bg, span = 26, shadows = true, iso = true, fov = 0 } = {
     // world → css px
     project(p) {
       v.copy(p).project(camera)
-      return [(v.x * 0.5 + 0.5) * innerWidth, (-v.y * 0.5 + 0.5) * innerHeight, v.z < 1]
+      return [(v.x * 0.5 + 0.5) * size.w, (-v.y * 0.5 + 0.5) * size.h, v.z < 1]
     },
   }
 }

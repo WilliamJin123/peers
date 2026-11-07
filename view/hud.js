@@ -87,7 +87,8 @@ export function createHud(sim, { title = 'peers' } = {}) {
       const x = sim.byId[id]
       el.classList.toggle('hidden', !visible)
       el.classList.toggle('blocked', x.state === 'blocked')
-      el.style.left = `${px}px`
+      const hw = el.offsetWidth / 2 + 6
+      el.style.left = `${Math.min(Math.max(px, hw), innerWidth - hw)}px`
       el.style.top = `${py}px`
       const sub = x.state === 'blocked' ? 'needs you' : x.state === 'wait' ? 'waiting'
         : x.state === 'idle' ? 'idle' : x.focus ? x.focus.split('/').pop() : ''

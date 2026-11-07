@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · sketch tower</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--hud-bg:#fffaf2e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2d8c6;--hud-alert:#e8622c;--hud-font:"Patrick Hand",ui-sans-serif,sans-serif}
+.hud{font-size:14px!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#f6f1e3 repeating-linear-gradient(0deg,transparent 0 23px,#d9e3ef 23px 24px)}
+svg{position:fixed;left:10px;right:10px;top:46px;bottom:92px;width:calc(100% - 20px);height:calc(100% - 138px)}
+.ink{stroke:#2b2722;stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}
+.fl{font:600 15px Caveat,cursive;fill:#8c8170}
+.fn{font:8px 'Patrick Hand',sans-serif;fill:#6f6658;text-anchor:middle}
+.mt{font:600 11px Caveat,cursive;fill:#2b2722;text-anchor:middle}
+.folder{transition:fill .4s}
+</style>
+</head>
+<body>
+<svg id="svg"></svg>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+
+const sim = createSim()
+await Promise.all([document.fonts.load('600 20px Caveat'), document.fonts.load('12px "Patrick Hand"')])
+const hud = createHud(sim, { title: 'peers · sketch tower' })
+const ALERT = '#e8622c', INK = '#2b2722'
+const NS = 'http://www.w3.org/2000/svg'
+const el = (tag, a = {}, p) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); p?.append(e); return e }
+const svg = document.getElementById('svg')
+const tall = innerWidth < innerHeight
+addEventListener('resize', () => { if ((innerWidth < innerHeight) !== tall) location.reload() })
+
+// cutaway: one floor per repo, folders on the back wall, lounge left, lift right, mailbox "main" on the roof
+const W = tall ? 360 : 640
+const X0 = 16, X1 = W - 16, LOUNGE = X0 + 54, SHAFT = X1 - 34, SHELF0 = LOUNGE + 10, SHELF1 = SHAFT - 16
+const COLW = 46
+const ROOF = 64
+const F = {} // repo → {y, h, base}
+const FOLD = {} // repo/file → {g, rect, x, y}
+let y = ROOF
+const defs = el('defs', {}, svg)
+const filt = el('filter', { id: 'rough', x: '-5%', y: '-5%', width: '110%', height: '110%' }, defs)
+const turb = el('feTurbulence', { type: 'fractalNoise', baseFrequency: '0.035', numOctaves: 2, seed: 1, result: 'n' }, filt)
+el('feDisplacementMap', { in: 'SourceGraphic', in2: 'n', scale: 2.6, xChannelSelector: 'R', yChannelSelector: 'G' }, filt)
+// hachure for held files the session is not on
+const hatch = (id, c) => { const p = el('pattern', { id, width: 4, height: 4, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(40)' }, defs); el('rect', { width: 4, height: 4, fill: '#fbf7ec' }, p); el('line', { x1: 0, y1: 0, x2: 0, y2: 4, stroke: c, 'stroke-width': 2.2 }, p) }
+for (const x of sim.sessions) hatch(`h-${x.id}`, x.color)
+const art = el('g', { filter: 'url(#rough)' }, svg)
+setInterval(() => turb.setAttribute('seed', (+turb.getAttribute('seed') % 3) + 1), 160)
+const back = el('g', {}, art), mid = el('g', {}, art), front = el('g', {}, art)
+// roof + mailbox
+el('path', { class: 'ink', d: `M${X0 - 6},${ROOF} L${X1 + 6},${ROOF}`, 'stroke-width': 3 }, back)
+const MB = { x: W / 2, y: ROOF }
+const mbox = el('g', { transform: `translate(${MB.x},${MB.y})` }, back)
+el('rect', { class: 'ink', x: -2, y: -12, width: 4, height: 12, fill: '#b9a98c' }, mbox)
+el('path', { class: 'ink', d: 'M-16,-12 v-14 a16,10 0 0 1 32,0 v14 z', fill: '#d7c9ad' }, mbox)
+el('rect', { class: 'ink', x: -9, y: -22, width: 18, height: 4, rx: 1, fill: '#a8987b' }, mbox)
+el('text', { class: 'mt', x: 0, y: -42 }, mbox).textContent = 'main'
+const flag = el('rect', { class: 'ink', x: 16, y: -24, width: 3, height: 12, fill: '#d14b2a', 'transform-origin': '17.5px -12px' }, mbox)
+// antenna + lift top
+el('path', { class: 'ink', d: `M${SHAFT},${ROOF} v-20 m-6,6 h12`, fill: 'none' }, back)
+
+for (const r of REPOS) {
+  const fs = files(r.id)
+  const cols = Math.max(1, Math.floor((SHELF1 - SHELF0) / COLW))
+  const rows = Math.ceil(fs.length / cols)
+  const h = 30 + rows * 44 + 26
+  F[r.id] = { y, h, base: y + h - 6 }
+  el('rect', { x: X0, y, width: X1 - X0, height: h, fill: r.id === 'wren' || r.id === 'vireo' ? '#efe6d6' : '#ebe1cf' }, back)
+  el('rect', { class: 'ink', x: X0, y, width: X1 - X0, height: h, fill: 'none' }, back)
+  el('rect', { class: 'ink', x: X0, y: y + h - 6, width: X1 - X0, height: 6, fill: '#c9b79a' }, back)
+  el('text', { class: 'fl', x: X0 + 8, y: y + 14 }, back).textContent = r.id.toUpperCase()
+  // lounge sofa
+  el('path', { class: 'ink', d: `M${X0 + 8},${y + h - 6} v-14 h40 v14 M${X0 + 8},${y + h - 14} h40`, fill: '#cdb994' }, back)
+  // lift shaft
+  el('rect', { class: 'ink', x: SHAFT - 13, y: y + 6, width: 26, height: h - 12, fill: '#e0d4bd' }, back)
+  el('path', { class: 'ink', d: `M${SHAFT},${y + 10} v${h - 20}`, 'stroke-dasharray': '2 3', fill: 'none' }, back)
+  fs.forEach((f, i) => {
+    const cx = SHELF0 + COLW / 2 + (i % cols) * COLW
+    const fy = y + 22 + Math.floor(i / cols) * 44
+    const g = el('g', { transform: `translate(${cx},${fy})` }, mid)
+    const rect = el('path', { class: 'ink folder', d: 'M-14,0 h10 l3,3 h15 v19 h-28 z', fill: '#f7f1e4' }, g)
+    el('text', { class: 'fn', x: 0, y: 30 }, g).textContent = f.split('/').pop()
+    FOLD[`${r.id}/${f}`] = { g, rect, x: cx, y: fy, flash: 0, lift: 0 }
+  })
+  y += h
+}
+el('rect', { class: 'ink', x: X0 - 6, y, width: X1 - X0 + 12, height: 6, fill: '#b3a284' }, back)
+svg.setAttribute('viewBox', `0 0 ${W} ${y + 10}`)
+
+// beans
+const B = {}
+const slot = {}
+for (const x of sim.sessions) {
+  const i = (slot[x.repo] = (slot[x.repo] ?? -1) + 1)
+  const g = el('g', {}, front)
+  const sh = el('ellipse', { cx: 0, cy: 0, rx: 8, ry: 2, fill: '#00000018' }, g)
+  const car = el('rect', { class: 'ink', x: -12, y: -30, width: 24, height: 31, rx: 2, fill: '#f5ecdc', opacity: 0 }, g)
+  const body = el('g', {}, g)
+  el('rect', { class: 'ink', x: -7, y: -20, width: 14, height: 20, rx: 7, fill: x.color }, body)
+  el('circle', { cx: -2.6, cy: -14, r: 1.1, fill: INK }, body); el('circle', { cx: 2.6, cy: -14, r: 1.1, fill: INK }, body)
+  const hand = el('circle', { class: 'ink', r: 2.6, cx: 8, cy: -8, fill: x.color }, g)
+  const parcel = el('rect', { class: 'ink', x: -5, y: -27, width: 10, height: 7, fill: '#d8c39c', opacity: 0 }, g)
+  const bub = el('g', { opacity: 0 }, g)
+  el('circle', { class: 'ink', cx: 10, cy: -30, r: 7, fill: '#fff' }, bub)
+  const bt = el('text', { class: 'mt', x: 10, y: -27.5 }, bub)
+  const f = F[x.repo]
+  const home = LOUNGE - 14 - i * 18
+  const first = [...x.holds.keys()][0]
+  const px = first ? FOLD[`${x.repo}/${first}`].x + (i ? 7 : -7) : home
+  B[x.id] = { x, g, body, hand, car, parcel, bub, bt, sh, px, py: f.base, path: [], home, carry: false, riding: false }
+}
+
+const go = (b, pts) => (b.path = pts)
+const standAt = (b, fx) => go(b, [{ x: fx + (b.x.id.charCodeAt(5) % 2 ? 7 : -7), y: F[b.x.repo].base }])
+let flagUp = 0
+
+function paint() {
+  for (const k in FOLD) FOLD[k].rect.setAttribute('fill', '#f7f1e4')
+  for (const x of sim.sessions) for (const [f] of x.holds) { const d = FOLD[`${x.repo}/${f}`]; d && d.rect.setAttribute('fill', f === x.focus ? x.color : `url(#h-${x.id})`) }
+}
+paint()
+
+sim.on((e) => {
+  const b = B[e.who] || B[e.from]
+  if ((e.type === 'edit' || e.type === 'take') && !b.carry) { const d = FOLD[`${e.repo}/${e.file}`]; standAt(b, d.x); d.lift = 1 }
+  if (e.type === 'commit') {
+    b.carry = true
+    const base = F[b.x.repo].base
+    go(b, [{ x: SHAFT, y: base }, { x: SHAFT, y: ROOF, ride: 1 }, { x: MB.x + 22, y: ROOF }, { x: MB.x + 22, y: ROOF, drop: 1 }, { x: SHAFT, y: ROOF }, { x: SHAFT, y: base, ride: 1 }, { x: SHAFT - 26, y: base, end: 1 }])
+  }
+  if (e.type === 'state' && e.state === 'idle' && !b.carry) go(b, [{ x: b.home, y: F[b.x.repo].base }])
+  if (e.type === 'clash') { const d = FOLD[`${e.repo}/${e.file}`]; if (d) d.flash = 2.6 }
+  if (e.type === 'msg') {
+    const a = B[e.from], c = B[e.to]
+    const p = el('path', { class: 'ink', d: 'M-5,-3 L6,0 L-5,3 L-2,0 z', fill: '#fff' }, front)
+    const ax = a.px, ay = a.py - 26, cx = c.px, cy = c.py - 26, top = Math.min(ay, cy) - 40
+    let k = 0
+    const step = () => {
+      k += 1 / 80; if (k >= 1) return p.remove()
+      const q = (u) => [(1 - u) ** 2 * ax + 2 * (1 - u) * u * ((ax + cx) / 2) + u * u * cx, (1 - u) ** 2 * ay + 2 * (1 - u) * u * top + u * u * cy]
+      const [x1, y1] = q(k), [x2, y2] = q(Math.min(1, k + 0.01))
+      p.setAttribute('transform', `translate(${x1},${y1}) rotate(${(Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI})`)
+      requestAnimationFrame(step)
+    }
+    step()
+  }
+  paint()
+})
+
+let last = performance.now()
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now; const T = now / 1000
+  const m = svg.getScreenCTM()
+  flagUp = Math.max(0, flagUp - dt * 0.5)
+  flag.setAttribute('transform', `rotate(${flagUp > 0 ? 0 : 90})`)
+  for (const k in FOLD) {
+    const d = FOLD[k]
+    d.lift = Math.max(0, d.lift - dt * 2)
+    let on = false
+    if (d.flash > 0) { d.flash -= dt; on = d.flash > 0 && Math.sin(T * 16) > 0 }
+    d.rect.setAttribute('stroke', on ? ALERT : INK); d.rect.setAttribute('stroke-width', on ? 3 : 1.4)
+    d.g.setAttribute('transform', `translate(${d.x},${d.y - Math.sin(d.lift * Math.PI) * 4})`)
+  }
+  for (const id in B) {
+    const b = B[id], x = b.x, n = b.path[0]
+    let moving = false
+    if (n) {
+      const dx = n.x - b.px, dy = n.y - b.py, d = Math.hypot(dx, dy)
+      const sp = (n.ride ? 150 : 80) * dt
+      b.riding = !!n.ride
+      if (d <= sp) {
+        b.px = n.x; b.py = n.y; b.path.shift()
+        if (n.drop) { flagUp = 1.5; b.carry = false }
+        if (n.end) b.carry = false
+      } else { b.px += (dx / d) * sp; b.py += (dy / d) * sp; moving = true; if (Math.abs(dx) > 0.5) b.dir = Math.sign(dx) }
+    }
+    if (!b.path.length && x.state === 'idle' && Math.abs(b.px - b.home) > 1 && !b.carry) go(b, [{ x: b.home, y: F[x.repo].base }])
+    const p = x.id.charCodeAt(4)
+    let bob = 0, hy = -8, hx = 8, lean = 0
+    if (moving && !b.riding) bob = -Math.abs(Math.sin(T * 14 + p)) * 2.4
+    else if (x.state === 'work') { hy = -9 - Math.abs(Math.sin(T * 16 + p)) * 2; lean = -6 }
+    else if (x.state === 'blocked') { bob = -Math.abs(Math.sin(T * 6 + p)) * 3; hy = -28 + Math.sin(T * 10) * 1.5; hx = 7 }
+    else if (x.state === 'idle') { bob = 3; lean = 4 }
+    b.g.setAttribute('transform', `translate(${b.px},${b.py})`)
+    b.body.setAttribute('transform', `translate(0,${bob}) rotate(${lean * (b.dir || 1) * 0.5})`)
+    b.hand.setAttribute('cx', hx); b.hand.setAttribute('cy', hy + bob)
+    b.car.setAttribute('opacity', b.riding ? 1 : 0)
+    b.parcel.setAttribute('opacity', b.carry ? 1 : 0)
+    b.parcel.setAttribute('y', -27 + bob)
+    const bubble = x.state === 'blocked' ? '!' : x.state === 'wait' ? '…' : ''
+    b.bub.setAttribute('opacity', bubble ? 1 : 0)
+    if (b.bt.textContent !== bubble) b.bt.textContent = bubble
+    b.bub.firstChild.setAttribute('stroke', x.state === 'blocked' ? ALERT : INK)
+    b.bub.firstChild.setAttribute('stroke-width', x.state === 'blocked' ? 2.2 : 1.4)
+    b.bt.setAttribute('fill', x.state === 'blocked' ? ALERT : INK)
+    const sp = new DOMPoint(b.px, b.py - 36).matrixTransform(m)
+    hud.place(id, sp.x, sp.y)
+  }
+  hud.frame()
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

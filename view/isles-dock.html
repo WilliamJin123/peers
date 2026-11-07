@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · isles + list</title>
+<style>
+:root{--hud-bg:#fdfbf6e8;--hud-fg:#28322f;--hud-dim:#6f7b76;--hud-line:#d6e0da;--hud-alert:#e8622c;--hud-font:ui-rounded,"SF Pro Rounded",ui-sans-serif,-apple-system,sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#bfe0d8}
+canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+import { createDock } from './dock.js'
+import { THREE, stage, clay, box, bean, walk, goTo, flights, arc, ease } from './kit.js'
+
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · isles' })
+const dock = createDock(sim)
+addEventListener('resize', () => location.reload())
+const S = stage({ bg: '#bfe0d8', span: dock.side ? 26 : 30, inset: dock.inset })
+const { scene } = S
+const fly = flights(scene, S.onFrame)
+const ALERT = '#e8622c'
+
+scene.add(new THREE.HemisphereLight('#fffaf0', '#8fc1b5', 1.2))
+const sun = new THREE.DirectionalLight('#fff3df', 1.8)
+sun.position.set(12, 24, 4); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048)
+Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 18, bottom: -18 }); sun.shadow.radius = 5
+scene.add(sun)
+
+// sea with soft swell
+const seaG = new THREE.PlaneGeometry(80, 80, 60, 60); seaG.rotateX(-Math.PI / 2)
+const sea = new THREE.Mesh(seaG, new THREE.MeshStandardMaterial({ color: '#9fd3c7', roughness: 0.6, flatShading: true }))
+sea.receiveShadow = true; scene.add(sea)
+const seaY = seaG.attributes.position.array.slice()
+
+const ISLE = { wren: [-6.8, -5.2, 5.4], peers: [7, -6, 3.6], vireo: [-6.5, 7, 3.4], engine: [6.4, 6.6, 3.9] }
+const grassM = clay('#b9cf94'), sandM = clay('#eadcb7'), roadM = clay('#e3d9c4')
+function label(str) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128
+  const g = c.getContext('2d'); g.font = '700 70px ui-rounded,"SF Pro Rounded",ui-sans-serif,sans-serif'; g.fillStyle = '#4f6a5f'; g.textBaseline = 'middle'; g.fillText(str, 8, 64)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.8), new THREE.MeshBasicMaterial({ map: t, transparent: true }))
+  m.rotation.x = -Math.PI / 2
+  return m
+}
+const isle = (x, z, r) => {
+  const sand = new THREE.Mesh(new THREE.CylinderGeometry(r + 0.6, r + 1, 0.8, 48), sandM); sand.position.set(x, 0, z)
+  const grass = new THREE.Mesh(new THREE.CylinderGeometry(r, r + 0.3, 0.3, 48), grassM); grass.position.set(x, 0.5, z)
+  for (const m of [sand, grass]) { m.receiveShadow = true; m.castShadow = true; scene.add(m) }
+}
+// houses: one per file, roof takes the holder's colour
+const H = {}
+const wallM = clay('#f7f1e4'), roofIdle = '#cdbfa8'
+for (const r of REPOS) {
+  const [cx, cz, rad] = ISLE[r.id]
+  isle(cx, cz, rad)
+  const l = label(r.id); l.position.set(cx - 0.9, 0.67, cz + rad - 0.6); scene.add(l)
+  const fs = files(r.id)
+  fs.forEach((f, i) => {
+    const a = (i / fs.length) * Math.PI * 2 + 0.3, rr = rad * (fs.length > 8 ? (i % 2 ? 0.42 : 0.74) : 0.6)
+    const x = cx + Math.cos(a) * rr, z = cz + Math.sin(a) * rr
+    const floors = 1 + ((f.length * 7 + i) % 3)
+    const g = new THREE.Group()
+    const body = box(0.9, 0.55 * floors, 0.9, wallM); body.position.y = 0.275 * floors; g.add(body)
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(0.8, 0.6, 4), clay(roofIdle)); roof.rotation.y = Math.PI / 4; roof.position.y = 0.55 * floors + 0.3; roof.castShadow = true; g.add(roof)
+    const door = box(0.22, 0.32, 0.02, clay('#9c8b70')); door.position.set(0, 0.16, 0.46); g.add(door)
+    g.position.set(x, 0.65, z); g.lookAt(cx, 0.65, cz); g.rotateY(Math.PI)
+    scene.add(g)
+    const tape = new THREE.Mesh(new THREE.TorusGeometry(0.85, 0.05, 6, 4), new THREE.MeshStandardMaterial({ color: ALERT, emissive: ALERT, emissiveIntensity: 0.4 }))
+    tape.rotation.x = Math.PI / 2; tape.rotation.z = Math.PI / 4; tape.position.y = 0.25; tape.visible = false; g.add(tape)
+    H[`${r.id}/${f}`] = { g, roof, body, floors, tape, red: 0, pos: new THREE.Vector3(x, 0.65, z) }
+  })
+}
+// lighthouse = main
+isle(0, 0.6, 1.8)
+const lh = new THREE.Group()
+const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.65, 3, 20), clay('#f6efe2')); tower.position.y = 1.5; tower.castShadow = true
+const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.6, 0.5, 20), clay('#d98c6e')); stripe.position.y = 1.2
+const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.42, 20, 20), new THREE.MeshStandardMaterial({ color: '#fff4d6', emissive: '#ffd27a', emissiveIntensity: 0.3 })); lamp.position.y = 3.3
+const cap = new THREE.Mesh(new THREE.ConeGeometry(0.55, 0.5, 20), clay('#d98c6e')); cap.position.y = 3.85
+lh.add(tower, stripe, lamp, cap); lh.position.set(0, 0.65, 0.6); scene.add(lh)
+const beamM = new THREE.MeshBasicMaterial({ color: '#fff1c4', transparent: true, opacity: 0, depthWrite: false })
+const beam = new THREE.Mesh(new THREE.ConeGeometry(1.2, 9, 24, 1, true), beamM); beam.rotation.z = Math.PI / 2; beam.position.set(4.5, 0, 0)
+const beamPivot = new THREE.Group(); beamPivot.position.set(0, 4, 0.6); beamPivot.add(beam); scene.add(beamPivot)
+// bridges to the lighthouse
+for (const [x, z, rad] of Object.values(ISLE)) {
+  const a = new THREE.Vector3(x, 0, z), b = new THREE.Vector3(0, 0, 0.6), d = a.distanceTo(b) - rad - 1.8
+  const mid = a.clone().lerp(b, (rad + d / 2) / a.distanceTo(b))
+  const br = box(0.9, 0.12, d + 0.8, clay('#c9ab83')); br.position.set(mid.x, 0.42, mid.z); br.lookAt(0, 0.42, 0.6); scene.add(br)
+}
+
+// cranes, one per session, in its colour
+function crane(color) {
+  const g = new THREE.Group(), m = clay(color)
+  const mast = box(0.14, 3.4, 0.14, m); mast.position.y = 1.7; g.add(mast)
+  const jib = new THREE.Group(); jib.position.y = 3.4; g.add(jib)
+  const arm = box(2.4, 0.12, 0.14, m); arm.position.x = 0.8; jib.add(arm)
+  const cw = box(0.35, 0.3, 0.3, clay('#8a8174')); cw.position.x = -0.35; jib.add(cw)
+  const cable = box(0.03, 1.4, 0.03, clay('#4a443c')); cable.position.set(1.7, -0.7, 0); jib.add(cable)
+  const warn = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), new THREE.MeshStandardMaterial({ color: '#fff', emissive: ALERT, emissiveIntensity: 0 })); warn.position.y = 0.2; jib.add(warn)
+  g.userData = { jib, warn }
+  return g
+}
+
+const W = {}
+const used = {}
+for (const x of sim.sessions) {
+  const [cx, cz, rad] = ISLE[x.repo]
+  const i = (used[x.repo] = (used[x.repo] ?? -1) + 1)
+  const b = bean(x.color); b.scale.setScalar(0.8)
+  const home = new THREE.Vector3(cx + (i ? 0.9 : -0.6), 0.65, cz + (i ? -0.4 : 0.5))
+  b.position.copy(home); scene.add(b)
+  const c = crane(x.color); c.visible = false; scene.add(c)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.72, 40), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0 }))
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.04; b.add(ring)
+  const a = Math.atan2(cz, cx) + (i ? 0.5 : -0.5)
+  W[x.id] = { x, b, c, ring, home, beach: new THREE.Vector3(cx - Math.cos(a) * (rad + 0.4), 0.42, cz - Math.sin(a) * (rad + 0.4)), shake: 0, errand: false }
+  for (const [f] of x.holds) paint(x.repo, f, x.color)
+}
+function paint(repo, f, color) { const h = H[`${repo}/${f}`]; if (h) h.roof.material.color.set(color) }
+const head = (w) => w.b.position.clone().add(new THREE.Vector3(0, 1.5, 0))
+
+sim.on((e) => {
+  const w = W[e.who] || W[e.from]
+  if ((e.type === 'edit' || e.type === 'take') && !w.errand) {
+    const h = H[`${e.repo}/${e.file}`]
+    paint(e.repo, e.file, w.x.color)
+    const p = h.pos, out = p.clone().sub(new THREE.Vector3(ISLE[e.repo][0], 0.65, ISLE[e.repo][1])).normalize()
+    w.c.visible = true; w.c.position.copy(p).addScaledVector(out, -0.9).setY(0.65)
+    w.c.userData.aim = Math.atan2(-(p.z - w.c.position.z), p.x - w.c.position.x)
+    goTo(w.b, p.x + out.x * 0.9, p.z + out.z * 0.9)
+    h.g.userData.bump = 1
+  }
+  if (e.type === 'msg') {
+    const plane = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.42, 4), clay('#fffdf8')); plane.castShadow = true
+    const a = head(w), b = head(W[e.to])
+    fly(plane, 1.6, (k, o) => { o.position.copy(arc(a, b, ease(k), 4)); o.lookAt(arc(a, b, Math.min(ease(k) + 0.02, 1), 4)); o.rotateX(Math.PI / 2) })
+  }
+  if (e.type === 'clash') {
+    const h = H[`${e.repo}/${e.file}`]; h.red = 2.6; h.tape.visible = true
+    w.shake = W[e.other].shake = 1.2
+  }
+  if (e.type === 'commit') {
+    w.c.visible = false
+    // a boat carries the commit to the lighthouse
+    const [cx, cz, rad] = ISLE[e.repo]
+    const from = new THREE.Vector3(cx, 0.3, cz).multiplyScalar(1).addScaledVector(new THREE.Vector3(-cx, 0, -cz).normalize(), rad + 0.9)
+    const to = new THREE.Vector3(0, 0.3, 0.6).addScaledVector(new THREE.Vector3(cx, 0, cz).normalize(), 2.4)
+    const boat = new THREE.Group()
+    const hull = box(0.9, 0.25, 0.45, clay('#f6efe2')); boat.add(hull)
+    const sail = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.8, 3), clay(w.x.color)); sail.position.y = 0.5; boat.add(sail)
+    boat.position.copy(from)
+    fly(boat, 3, (k, o) => { o.position.lerpVectors(from, to, ease(k)); o.position.y = 0.32 + Math.sin(k * 20) * 0.05; o.lookAt(to.x, o.position.y, to.z); o.rotateY(Math.PI / 2) }, () => { beamM.userData.flash = 1.6 })
+    for (const f of e.files) {
+      const h = H[`${e.repo}/${f}`]; if (!h) continue
+      h.roof.material.color.set(roofIdle)
+      // a commit adds a floor
+      h.floors = Math.min(h.floors + 1, 5)
+      h.body.geometry.dispose(); h.body.geometry = new THREE.BoxGeometry(0.9, 0.55 * h.floors, 0.9)
+      h.body.position.y = 0.275 * h.floors; h.roof.position.y = 0.55 * h.floors + 0.3
+    }
+  }
+  if (e.type === 'state' && !w.errand) {
+    if (e.state === 'idle') { w.c.visible = false; goTo(w.b, w.beach.x, w.beach.z) }
+  }
+})
+
+S.onFrame((dt, t) => {
+  const pa = seaG.attributes.position
+  for (let i = 0; i < pa.count; i++) pa.array[i * 3 + 1] = Math.sin(seaY[i * 3] * 0.35 + t * 0.9) * 0.08 + Math.cos(seaY[i * 3 + 2] * 0.3 + t * 0.7) * 0.08
+  pa.needsUpdate = true
+  beamPivot.rotation.y += dt * 0.9
+  beamM.userData.flash = Math.max(0, (beamM.userData.flash || 0) - dt)
+  beamM.opacity = Math.min(beamM.userData.flash, 1) * 0.55
+  lamp.material.emissiveIntensity = 0.3 + beamM.userData.flash * 1.5
+  for (const h of Object.values(H)) {
+    const u = h.g.userData; u.bump = Math.max(0, (u.bump || 0) - dt * 2.5)
+    h.g.scale.set(1 + Math.sin(u.bump * Math.PI) * 0.12, 1 - Math.sin(u.bump * Math.PI) * 0.08, 1 + Math.sin(u.bump * Math.PI) * 0.12)
+    if (h.red > 0) { h.red -= dt; if (h.red <= 0) h.tape.visible = false; h.tape.rotation.z += dt }
+  }
+  for (const w of Object.values(W)) {
+    const { x, b, c } = w, u = b.userData
+    const moving = walk(b, dt)
+    let y = 0, handY = 0.65
+    if (moving) y = Math.abs(Math.sin(t * 12)) * 0.12
+    else if (x.state === 'work') { y = Math.abs(Math.sin(t * 4 + x.id.charCodeAt(5))) * 0.05; handY = 0.8 + Math.sin(t * 8) * 0.1 }
+    else if (x.state === 'blocked') { y = Math.abs(Math.sin(t * 5)) * 0.18; handY = 1.5 + Math.sin(t * 10) * 0.08 }
+    else if (x.state === 'idle' && !moving) { y = -0.2; b.lookAt(b.position.x * 2, b.position.y, b.position.z * 2) }
+    if (w.shake > 0) { w.shake -= dt; b.position.x += Math.sin(t * 60) * 0.01 }
+    u.body.position.y = 0.7 + y
+    u.hand.position.y += (handY + y - u.hand.position.y) * 0.25
+    w.ring.material.opacity = x.state === 'blocked' ? 0.55 + Math.sin(t * 6) * 0.35 : 0
+    if (c.visible) {
+      const j = c.userData.jib, aim = c.userData.aim ?? 0
+      j.rotation.y += (aim + (x.state === 'work' ? Math.sin(t * 0.8) * 0.35 : 0) - j.rotation.y) * 0.05
+      c.userData.warn.material.emissiveIntensity = x.state === 'blocked' && Math.sin(t * 10) > 0 ? 2.5 : 0
+    }
+    const [sx, sy, vis] = S.project(head(w))
+    hud.place(x.id, sx, sy, vis)
+  }
+  hud.frame()
+})
+</script>
+</body>
+</html>
