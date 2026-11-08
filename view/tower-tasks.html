@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · tower tasks</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--hud-bg:#fffaf2e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2d8c6;--hud-alert:#e8622c;--hud-font:"Patrick Hand",ui-sans-serif,sans-serif}
+.hud{font-size:14px!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#f6f1e3 repeating-linear-gradient(0deg,transparent 0 23px,#d9e3ef 23px 24px)}
+svg{position:fixed;left:10px;top:46px;touch-action:none}
+</style>
+</head>
+<body>
+<svg id="svg"></svg>
+<script type="module">
+import { createSim } from './sim.js'
+import { createHud } from './hud.js'
+import { createDock } from './dock.js'
+import { navChrome } from './chrome.js'
+import { sketchTower, svgView, towerInput, keepOf, placeTags, el, ALERT, INK } from './tower.js'
+
+// sketch tower + a hand-drawn task board; strings run from each held card to its worker
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · tower tasks' })
+const dock = createDock(sim, { tasks: true, tab: 'tasks', onPick: (s) => pick(s, true) })
+const svg = document.getElementById('svg')
+const ins = dock.inset()
+Object.assign(svg.style, { width: `${innerWidth - ins.right - 20}px`, height: `${innerHeight - ins.bottom - 46 - 30}px` })
+const tall = innerWidth - ins.right < innerHeight - ins.bottom
+addEventListener('resize', () => location.reload())
+const T = await sketchTower(sim, svg, { W: tall ? 360 : 540, sized: true })
+
+// board: beside the tower (wide) or under it (tall); sections by status, two cards a row
+const BX = tall ? 16 : T.W + 14, BW = tall ? T.W - 32 : 300, BY = tall ? T.H + 8 : 40
+const CW = (BW - 30) / 2, CH = 44
+const ORDER = ['In Progress', 'Blocked', 'To Do', 'Done']
+const FILL = { 'In Progress': '#fffaf0', Blocked: '#fbe1d0', 'To Do': '#f3ecdc', Done: '#e6dfcf' }
+const bd = el('g', { filter: 'url(#rough)' }, svg)
+const paper = el('rect', { class: 'ink', x: BX, y: BY, width: BW, height: 100, fill: '#efe2c4' }, bd)
+el('text', { class: 'fl', x: BX + 10, y: BY + 20, style: 'fill:#4d463c;font-size:19px' }, bd).textContent = 'board'
+const heads = Object.fromEntries(ORDER.map((st) => [st, el('text', { class: 'fl', x: BX + 12, style: `fill:${st === 'Blocked' ? ALERT : '#8c8170'}` }, bd)]))
+const strG = el('g', {}, svg)
+const C = {}
+for (const t of sim.tasks) {
+  const g = el('g', { class: 'pickable' }, bd); g.dataset.task = t.id
+  const r = el('rect', { class: 'ink', x: 0, y: 0, width: CW, height: CH, rx: 2, fill: FILL[t.status] }, g)
+  el('text', { class: 'mt', x: 8, y: 15, style: 'text-anchor:start;font-size:13px' }, g).textContent = t.id
+  const ti = el('text', { class: 'fn', x: 8, y: 28, style: 'text-anchor:start;font-size:9.5px' }, g); ti.textContent = t.title.length > 22 ? t.title.slice(0, 21) + '…' : t.title
+  const sub = el('text', { class: 'fn', x: 8, y: 39, style: 'text-anchor:start;font-size:8.5px' }, g)
+  const pin = el('circle', { class: 'ink', cx: CW / 2, cy: 1, r: 3, fill: '#a8987b' }, g)
+  C[t.id] = { g, r, ti, sub, pin, x: 0, y: 0, tx: 0, ty: 0, dim: false }
+}
+let BH = 0
+function layout(snap) {
+  let y = BY + 40
+  for (const st of ORDER) {
+    const ts = sim.tasks.filter((t) => t.status === st)
+    heads[st].setAttribute('y', y); heads[st].textContent = `${st.toLowerCase()} · ${ts.length}`
+    y += 10
+    ts.forEach((t, i) => {
+      const c = C[t.id]; c.tx = BX + 10 + (i % 2) * (CW + 10); c.ty = y + Math.floor(i / 2) * (CH + 10)
+      if (snap) { c.x = c.tx; c.y = c.ty }
+      c.r.setAttribute('fill', FILL[st]); c.pin.setAttribute('fill', st === 'Blocked' ? ALERT : '#a8987b')
+      c.ti.setAttribute('text-decoration', st === 'Done' ? 'line-through' : '')
+    })
+    y += Math.ceil(ts.length / 2) * (CH + 10) + 18
+  }
+  BH = Math.max(y - BY, 120); paper.setAttribute('height', BH)
+}
+function subs() {
+  for (const t of sim.tasks) {
+    const c = C[t.id], h = t.holders.map((id) => sim.byId[id].name).join(', ')
+    c.sub.textContent = t.status === 'Blocked' ? `on ${t.on}` : t.status === 'To Do' ? 'free' : `${h || "—"} · ${t.commits.length} commit${t.commits.length === 1 ? "" : "s"}`
+    c.sub.setAttribute('style', `text-anchor:start;font-size:8.5px;fill:${t.status === 'Blocked' ? ALERT : '#6f6658'}`)
+  }
+}
+layout(true); subs()
+const VW = tall ? T.W : BX + BW + 12, VH = tall ? BY + BH + 12 : Math.max(T.H, BY + BH + 12)
+const view = svgView(svg, [0, 0, VW, VH])
+const { tip } = navChrome({ reset: () => { view.reset(); pick(null) } })
+
+// zoom box: the floor's height, centred on x
+let picked = null
+function pick(s, fromDock) {
+  picked = s
+  if (!fromDock) dock.inspect(s)
+  const keep = keepOf(sim, s)
+  for (const k in T.FOLD) T.FOLD[k].dim = !!keep && !keep.has(k)
+  const tk = s?.task ?? (s?.session ? sim.byId[s.session].taskId : null)
+  for (const id in C) C[id].dim = !!s && id !== tk
+  if (!s?.task) return input.focus(s)
+  // task: frame its card and its workers
+  const c = C[s.task], pts = [[c.tx, c.ty], [c.tx + CW, c.ty + CH], ...sim.taskById[s.task].holders.map((h) => [T.B[h].px, T.B[h].py - 40])]
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), x0 = Math.min(...xs) - 30, y0 = Math.min(...ys) - 30
+  view.flyTo([x0, y0, Math.max(...xs) + 30 - x0, Math.max(...ys) + 30 - y0])
+}
+const input = towerInput(sim, T, svg, view, { pick, tip })
+sim.on((e) => {
+  if (e.type === 'claim' || e.type === 'close') layout()
+  if (['claim', 'close', 'commit'].includes(e.type)) subs()
+  if (e.type === 'commit' && e.task) C[e.task].bump = 1
+})
+// strings: card edge -> worker's head, a sag between
+function strings() {
+  strG.replaceChildren()
+  for (const t of sim.tasks) for (const h of t.holders) {
+    const c = C[t.id], b = T.B[h]; if (!b) continue
+    const ax = tall ? c.x + CW / 2 : c.x, ay = tall ? c.y : c.y + CH / 2, bx = b.px, by = b.py - 22
+    const mx = (ax + bx) / 2, my = Math.max(ay, by) + (tall ? -60 : 50)
+    const on = !picked || c.dim === false
+    el('path', { d: `M${ax},${ay} Q${mx},${my} ${bx},${by}`, fill: 'none', stroke: sim.byId[h].color, 'stroke-width': on ? 1.8 : 1, 'stroke-dasharray': '5 4', opacity: on ? 0.9 : 0.18 }, strG)
+  }
+}
+
+let last = performance.now()
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now
+  T.tick(dt, now / 1000)
+  for (const id in C) {
+    const c = C[id]; c.x += (c.tx - c.x) * Math.min(1, dt * 4); c.y += (c.ty - c.y) * Math.min(1, dt * 4)
+    c.bump = Math.max(0, (c.bump || 0) - dt * 2)
+    c.g.setAttribute('transform', `translate(${c.x.toFixed(1)},${(c.y - Math.sin(c.bump * Math.PI) * 4).toFixed(1)})`)
+    c.g.setAttribute('opacity', c.dim ? 0.35 : 1)
+    c.r.setAttribute('stroke-width', picked?.task === id ? 3 : 1.5)
+  }
+  strings()
+  placeTags(T, svg, hud)
+  hud.frame()
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

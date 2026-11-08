@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · file campus</title>
+<style>
+:root{--hud-bg:#fbf9f4e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2dccf;--hud-alert:#e8622c;--hud-font:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#efece3}
+canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+import { createSim, REPOS, files } from './sim.js'
+import { createHud } from './hud.js'
+import { createDock } from './dock.js'
+import { THREE, stage, clay, box, bean, walk, goTo, flights, arc, ease, textPlane, sunlight, pose, navigate, sign } from './kit.js'
+
+// files are buildings: height = lines, roof = holder colour; workers walk to the file they edit
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · campus' })
+const dock = createDock(sim, { tasks: true, onPick: (s) => pick(s, true) })
+addEventListener('resize', () => location.reload())
+const S = stage({ bg: '#efece3', span: dock.side ? 31 : 31, inset: dock.inset })
+const { scene } = S
+const fly = flights(scene, S.onFrame)
+const ALERT = '#e8622c'
+sunlight(scene, { r: 20 })
+
+const ground = box(32, 0.5, 32, clay('#e6dfcf')); ground.position.y = -0.25; scene.add(ground)
+// districts: one per repo, a row per dir, a lot per file
+const ORIGIN = { wren: [-12.6, -13.6], peers: [3, -13.6], vireo: [-12.6, 3.2], engine: [3, 3.2] }
+const LOT = 2.2, ROW = 3.1
+const B = {} // repo/path -> building
+const hgt = (n) => 0.25 + Math.sqrt(n) * 0.085
+for (const r of REPOS) {
+  const [ox, oz] = ORIGIN[r.id]
+  const rows = r.dirs.length, cols = Math.max(...r.dirs.map((d) => files(r.id).filter((f) => f.startsWith(d + '/')).length))
+  const w = cols * LOT + 1.2, d = rows * ROW + 1.6
+  const plate = box(w, 0.08, d, clay('#ddd4c1')); plate.position.set(ox + w / 2 - 0.6, 0.04, oz + d / 2 - 0.4); scene.add(plate)
+  const l = textPlane(r.id, { w: 4, size: 72, color: '#7d7466' }); l.position.set(ox + 1.4, 0.1, oz + d - 0.75); scene.add(l)
+  r.dirs.forEach((dir, ri) => {
+    const fs = files(r.id).filter((f) => f.startsWith(dir + '/'))
+    const dl = textPlane(dir, { w: 3, size: 46, color: '#9a907f' }); dl.position.set(ox + 1.0, 0.1, oz + ri * ROW + 1.55); scene.add(dl)
+    fs.forEach((f, ci) => {
+      const key = `${r.id}/${f}`, n = sim.lines.get(key)
+      const g = new THREE.Group()
+      const mat = clay('#f4efe5', { transparent: true })
+      const body = box(1.45, 1, 1.45, mat); body.position.y = 0.5; g.add(body)
+      const roof = box(1.55, 0.16, 1.55, clay('#e4dccb', { emissive: '#000000', emissiveIntensity: 0 }))
+      g.add(roof)
+      const nm = textPlane(f.split('/').pop(), { w: 2.1, size: 96, color: "#5f584d" }); nm.position.set(0.25, 0.04, 1.08); g.add(nm)
+      g.position.set(ox + ci * LOT + 0.7, 0.08, oz + ri * ROW + 0.55)
+      g.userData = { pick: { file: key }, body, roof, mat, h: hgt(n), shown: hgt(n), flash: 0, bump: 0 }
+      scene.add(g); B[key] = g
+    })
+  })
+}
+// main: the plaza tower every commit goes to
+const plaza = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.3, 0.1, 48), clay('#d9cdb4')); plaza.position.set(0, 0.06, 0); plaza.receiveShadow = true; scene.add(plaza)
+const main = new THREE.Group()
+const mb = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.8, 2.2, 6), clay('#c9b898')); mb.position.y = 1.1; mb.castShadow = true
+const mlight = new THREE.Mesh(new THREE.SphereGeometry(0.35, 20, 20), clay('#efe4cf', { emissive: '#ffb36b', emissiveIntensity: 0 })); mlight.position.y = 2.45
+main.add(mb, mlight); main.position.set(0, 0, 0); main.userData.pick = null; scene.add(main)
+const ml = sign('main', { h: 0.42, bg: null, color: '#7d7466' }); ml.position.set(0, 3.1, 0); scene.add(ml)
+
+const W = {}
+const door = (key) => { const g = B[key]; return new THREE.Vector3(g.position.x + 0.95, 0, g.position.z + 0.85) }
+sim.sessions.forEach((x, i) => {
+  const b = bean(x.color); b.scale.setScalar(0.95); b.userData.pick = { session: x.id }
+  const first = [...x.holds.keys()][0]
+  const p = first ? door(`${x.repo}/${first}`) : new THREE.Vector3(Math.cos(i) * 1.6, 0, Math.sin(i) * 1.6)
+  b.position.copy(p); scene.add(b)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.72, 40), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0 }))
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.06; b.add(ring)
+  W[x.id] = { x, b, ring, errand: false, at: first ? `${x.repo}/${first}` : null, bench: new THREE.Vector3(Math.cos(i * 1.05) * 1.7, 0, Math.sin(i * 1.05) * 1.7) }
+})
+const W2 = Object.values(W)
+
+function paintRoofs() {
+  for (const [key, g] of Object.entries(B)) {
+    const [repo, ...p] = key.split('/'), f = p.join('/')
+    const h = sim.holderOf(repo, f), u = g.userData
+    u.roof.material.color.set(h ? h.color : '#e4dccb')
+    u.roof.material.emissive.set(h && h.focus === f ? h.color : '#000000')
+    u.roof.material.emissiveIntensity = h && h.focus === f ? 0.35 : 0
+  }
+}
+paintRoofs()
+
+// picked file, task or session: the rest fade
+let picked = null
+function pick(s, fromDock) {
+  picked = s
+  if (!fromDock) dock.inspect(s)
+  const keep = !s ? null : s.file ? new Set([s.file]) : s.task ? sim.taskById[s.task].files : new Set([...sim.byId[s.session].holds.keys()].map((f) => `${sim.byId[s.session].repo}/${f}`))
+  for (const [key, g] of Object.entries(B)) g.userData.mat.opacity = !keep || keep.has(key) ? 1 : 0.28
+  if (s?.file) nav.flyTo(B[s.file].position.clone().setY(1), 1.9)
+  if (s?.session) nav.flyTo(W[s.session].b.position.clone().setY(1), 1.7)
+}
+const tip = (p) => {
+  if (p.session) { const x = sim.byId[p.session]; return `<b>${x.name}</b> <span>${x.taskId ?? ''} ${x.task}</span>` }
+  const [repo, ...q] = p.file.split('/'), h = sim.holderOf(repo, q.join('/'))
+  return `<b>${p.file}</b><br><span>${sim.lines.get(p.file)} lines · ${h ? `held by ${h.name}` : 'free'}</span>`
+}
+// #file=… / #task=… / #session=… opens one on load
+setTimeout(() => { const q = Object.fromEntries(new URLSearchParams(location.hash.slice(1))); if (Object.keys(q).length) pick(q) }, 1200)
+const nav = navigate(S, { pickables: () => [...Object.values(B), ...W2.map((w) => w.b)], onPick: (p) => pick(p), tip })
+
+const head = (w) => w.b.position.clone().add(new THREE.Vector3(0, 1.45, 0))
+sim.on((e) => {
+  const w = W[e.who] || W[e.from]
+  if (e.type === 'edit') {
+    const key = `${e.repo}/${e.file}`, g = B[key], u = g.userData
+    u.h = hgt(e.lines)
+    if (!w.errand && w.at !== key) { w.at = key; const d = door(key); goTo(w.b, d.x, d.z, () => (w.b.rotation.y = Math.PI)) }
+    // the edit lands: a slab in the session colour drops on the roof
+    const slab = box(1.3, 0.12 + e.add * 0.012, 1.3, clay(w.x.color)); const top = g.position.clone().setY(u.shown + 0.25)
+    fly(slab, 0.7, (k, o) => { o.position.copy(top).setY(top.y + (1 - ease(k)) * 3); o.material.opacity = 1 }, () => (u.bump = 1))
+    const t = sign(`+${e.add} −${e.rem}`, { h: 0.36, color: w.x.color, bg: '#fbf9f4' }); const p0 = top.clone().setY(top.y + 1)
+    fly(t, 1.6, (k, o) => { o.position.copy(p0).setY(p0.y + k * 1.2); o.material.opacity = 1 - k * k })
+    paintRoofs()
+  }
+  if (e.type === 'take') paintRoofs()
+  if (e.type === 'clash') { const g = B[`${e.repo}/${e.file}`]; if (g) g.userData.flash = 2.2 }
+  if (e.type === 'msg') {
+    const to = W[e.to], a = head(w), b = head(to)
+    const plane = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.44, 4), clay('#fffdf8'))
+    fly(plane, 1.5, (k, o) => { o.position.copy(arc(a, b, ease(k), 3.5)); o.lookAt(arc(a, b, Math.min(ease(k) + 0.02, 1), 3.5)); o.rotateX(Math.PI / 2) })
+  }
+  if (e.type === 'commit') {
+    paintRoofs()
+    const parcel = box(0.5, 0.4, 0.5, clay(w.x.color)); parcel.position.set(0, 1.35, 0.4); w.b.add(parcel)
+    w.errand = true
+    const back = w.b.position.clone(), ang = Math.atan2(back.z, back.x)
+    goTo(w.b, Math.cos(ang) * 1.2, Math.sin(ang) * 1.2, () => {
+      w.b.remove(parcel); mlight.material.emissiveIntensity = 2.4
+      goTo(w.b, back.x, back.z, () => { w.errand = false; w.b.rotation.y = Math.PI })
+    })
+  }
+  if (e.type === 'state' && !w.errand) {
+    if (e.state === 'idle') goTo(w.b, w.bench.x, w.bench.z)
+    else if (w.at) { const d = door(w.at); goTo(w.b, d.x, d.z, () => (w.b.rotation.y = Math.PI)) }
+  }
+})
+
+S.onFrame((dt, t) => {
+  mlight.material.emissiveIntensity *= 0.96
+  for (const g of Object.values(B)) {
+    const u = g.userData
+    u.shown += (u.h - u.shown) * Math.min(1, dt * 3)
+    u.bump = Math.max(0, u.bump - dt * 2.5)
+    u.body.scale.y = u.shown; u.body.position.y = u.shown / 2
+    u.roof.position.y = u.shown + 0.08 + Math.sin(u.bump * Math.PI) * 0.15
+    if (u.flash > 0) { u.flash -= dt; u.mat.color.set(u.flash > 0 && Math.sin(t * 16) > 0 ? ALERT : '#f4efe5') }
+  }
+  for (const w of W2) {
+    const moving = walk(w.b, dt)
+    pose(w.b, w.x, t, moving, !moving && w.x.state === 'work')
+    w.ring.material.opacity = w.x.state === 'blocked' ? 0.55 + Math.sin(t * 6) * 0.35 : 0
+    const [sx, sy, vis] = S.project(head(w))
+    hud.place(w.x.id, sx, sy, vis)
+  }
+  hud.frame()
+})
+</script>
+</body>
+</html>

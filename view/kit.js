@@ -1,6 +1,7 @@
 // three.js stage + parts shared by the 3D samples.
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { navChrome } from './chrome.js'
 
 export { THREE }
 
@@ -171,4 +172,71 @@ export function pose(b, x, t, moving, at) {
   u.body.position.y = 0.7 + y
   u.body.rotation.x += (lean - u.body.rotation.x) * 0.15
   u.hand.position.y += (handY + y - u.hand.position.y) * 0.25
+}
+
+
+// navigate: pan on the ground, zoom to the cursor, click (not drag) picks, flyTo eases the view; Esc or Reset goes home
+// pick target: any object, or a parent, with userData.pick
+export function navigate(S, { pickables = () => [], onPick, onHover, tip, minZoom = 0.6, maxZoom = 5 } = {}) {
+  const { camera, controls, renderer } = S, el = renderer.domElement
+  Object.assign(controls, { enablePan: true, screenSpacePanning: false, minZoom, maxZoom, zoomToCursor: true })
+  const home = { pos: camera.position.clone(), target: controls.target.clone(), zoom: camera.zoom }
+  let tw = null
+  const flyTo = (target, zoom = camera.zoom, pos) => {
+    tw = { k: 0, t0: controls.target.clone(), t1: target.clone(), p0: camera.position.clone(),
+      p1: pos ?? camera.position.clone().add(target.clone().sub(controls.target)), z0: camera.zoom, z1: zoom }
+  }
+  S.onFrame((dt) => {
+    if (!tw) return
+    tw.k = Math.min(1, tw.k + dt / 0.75)
+    const e = ease(tw.k)
+    controls.target.lerpVectors(tw.t0, tw.t1, e)
+    camera.position.lerpVectors(tw.p0, tw.p1, e)
+    camera.zoom = tw.z0 + (tw.z1 - tw.z0) * e
+    camera.updateProjectionMatrix()
+    if (tw.k >= 1) tw = null
+  })
+  const ray = new THREE.Raycaster(), m = new THREE.Vector2()
+  const hit = (e) => {
+    const r = el.getBoundingClientRect()
+    m.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
+    ray.setFromCamera(m, camera)
+    const h = ray.intersectObjects(pickables(), true)[0]
+    let o = h?.object
+    while (o && !o.userData.pick) o = o.parent
+    return o ? { pick: o.userData.pick, obj: o, point: h.point } : null
+  }
+  let down = null, last = 0
+  el.addEventListener('pointerdown', (e) => (down = [e.clientX, e.clientY]))
+  el.addEventListener('pointerup', (e) => {
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return
+    const h = hit(e)
+    onPick?.(h?.pick ?? null, h)
+  })
+  el.addEventListener('pointermove', (e) => {
+    if (e.buttons || performance.now() - last < 60) return
+    last = performance.now()
+    const h = hit(e)
+    el.style.cursor = h ? 'pointer' : 'grab'
+    onHover?.(h?.pick ?? null, h)
+    chrome.tip(e, h && tip?.(h.pick))
+  })
+  const reset = () => flyTo(home.target, home.zoom, home.pos)
+  const chrome = navChrome({ reset, hint: 'drag to turn · right-drag to pan · scroll to zoom · click to inspect' })
+  return { flyTo, reset, home }
+}
+
+// camera-facing label (canvas sprite); h = world height
+export function sign(str, { color = '#2b2722', bg = '#fbf9f4', h = 0.5, weight = 600, font = 'ui-sans-serif,-apple-system,sans-serif', pad = 18 } = {}) {
+  const c = document.createElement('canvas'), g = c.getContext('2d'), fs = 56
+  g.font = `${weight} ${fs}px ${font}`
+  const w = Math.ceil(g.measureText(str).width) + pad * 2
+  c.width = w; c.height = fs + pad * 1.4
+  g.font = `${weight} ${fs}px ${font}`
+  if (bg) { g.fillStyle = bg; g.beginPath(); g.roundRect(0, 0, c.width, c.height, c.height / 2); g.fill() }
+  g.fillStyle = color; g.textBaseline = 'middle'; g.fillText(str, pad, c.height / 2 + 2)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false }))
+  s.scale.set((h * c.width) / c.height, h, 1)
+  return s
 }

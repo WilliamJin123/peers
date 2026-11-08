@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · office tasks</title>
+<style>
+:root{--hud-bg:#fbf9f4e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2dccf;--hud-alert:#e8622c;--hud-font:ui-sans-serif,-apple-system,"Segoe UI",sans-serif}
+html,body{margin:0;height:100%;overflow:hidden;background:#f0eee6}
+canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<script type="module">
+import { createSim, REPOS } from './sim.js'
+import { createHud } from './hud.js'
+import { createDock } from './dock.js'
+import { THREE, stage, clay, box, bean, walk, goTo, flights, arc, ease, textPlane, navigate } from './kit.js'
+
+// office + the task board on the back wall: strings run from each held card to its desk
+
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · office tasks' })
+const dock = createDock(sim, { tasks: true, tab: 'tasks', onPick: (s) => pick(s, true) })
+addEventListener('resize', () => location.reload())
+const S = stage({ bg: '#f0eee6', span: dock.side ? 30 : 27, inset: dock.inset })
+const { scene } = S
+const fly = flights(scene, S.onFrame)
+const ALERT = '#e8622c'
+
+scene.add(new THREE.HemisphereLight('#fff7ec', '#d6c8af', 1.25))
+const sun = new THREE.DirectionalLight('#fff1dc', 1.7)
+sun.position.set(10, 22, 6)
+sun.castShadow = true
+sun.shadow.mapSize.set(2048, 2048)
+Object.assign(sun.shadow.camera, { left: -17, right: 17, top: 17, bottom: -17 })
+sun.shadow.radius = 6
+scene.add(sun)
+
+// floor + rooms
+const floor = box(27, 0.5, 27, clay('#e7e0d1'))
+floor.position.y = -0.25
+scene.add(floor)
+const ROOM = { wren: [-6.6, -6.6], peers: [6.6, -6.6], vireo: [-6.6, 6.6], engine: [6.6, 6.6] }
+const TINT = { wren: '#ece4d3', peers: '#e6e6d6', vireo: '#efe1dc', engine: '#e3e1d8' }
+function text(str, size = 64, color = '#8c8374') {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128
+  const g = c.getContext('2d'); g.font = `600 ${size}px ui-sans-serif,-apple-system,sans-serif`; g.fillStyle = color; g.textBaseline = 'middle'; g.fillText(str, 8, 64)
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(4, 1), new THREE.MeshBasicMaterial({ map: t, transparent: true }))
+  m.rotation.x = -Math.PI / 2
+  return m
+}
+for (const r of REPOS) {
+  const [x, z] = ROOM[r.id]
+  const f = box(11.4, 0.06, 11.4, clay(TINT[r.id]))
+  f.position.set(x, 0.03, z); scene.add(f)
+  const l = text(r.id); l.position.set(x - 3.4, 0.07, z + 4.9); scene.add(l)
+}
+const wallM = clay('#d8cdb8')
+const wall = (w, d, x, z, h = 2.2) => { const m = box(w, h, d, wallM); m.position.set(x, h / 2, z); scene.add(m) }
+wall(27, 0.4, 0, -13.3); wall(0.4, 27, -13.3, 0)
+// low partitions with a plaza gap in the middle
+for (const s of [-1, 1]) { wall(0.3, 6.5, 0, s * 9.75, 0.9); wall(6.5, 0.3, s * 9.75, 0, 0.9) }
+
+// plaza: main dropbox + sofas
+const rug = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.1, 0.05, 48), clay('#e2d6bf'))
+rug.position.y = 0.05; rug.receiveShadow = true; scene.add(rug)
+const main = new THREE.Group()
+const base = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.9, 1.1, 32), clay('#cdbfa6')); base.position.y = 0.55; base.castShadow = true
+const lid = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.1, 12, 32), clay('#b9a98c', { emissive: '#ffb36b', emissiveIntensity: 0 }))
+lid.rotation.x = Math.PI / 2; lid.position.y = 1.12
+main.add(base, lid); scene.add(main)
+const mainLabel = text('main', 56); mainLabel.scale.setScalar(0.6); mainLabel.position.set(-0.5, 0.09, 1.6); scene.add(mainLabel)
+const sofaM = clay('#b7a98f')
+const SOFA = [[-2.2, 2.2], [2.2, -2.2]]
+for (const [x, z] of SOFA) {
+  const s = new THREE.Group(); s.add(box(2.4, 0.5, 1, sofaM)); const back = box(2.4, 0.6, 0.3, sofaM); back.position.set(0, 0.45, -0.38); s.add(back)
+  s.position.set(x, 0.25, z); s.lookAt(0, 0.25, 0); scene.add(s)
+}
+
+// desks
+const SLOTS = { wren: [[-2.6, 0], [2.6, 0]], peers: [[0, 0]], vireo: [[0, 0]], engine: [[-2.6, 0], [2.6, 0]] }
+const used = {}
+const W = {}
+const paperM = clay('#fbf8f1'), alertM = clay(ALERT)
+const deskM = clay('#cbb89a'), legM = clay('#b3a284'), screenOff = '#3a3631'
+for (const x of sim.sessions) {
+  const i = (used[x.repo] = (used[x.repo] ?? -1) + 1)
+  const [rx, rz] = ROOM[x.repo], [ox, oz] = SLOTS[x.repo][i]
+  const dx = rx + ox, dz = rz + oz
+  const desk = new THREE.Group()
+  const top = box(2.6, 0.12, 1.2, deskM); top.position.y = 1.0; desk.add(top)
+  for (const [lx, lz] of [[-1.2, -0.5], [1.2, -0.5], [-1.2, 0.5], [1.2, 0.5]]) { const l = box(0.1, 1, 0.1, legM); l.position.set(lx, 0.5, lz); desk.add(l) }
+  const scr = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.08), new THREE.MeshStandardMaterial({ color: screenOff, emissive: x.color, emissiveIntensity: 0.15, roughness: 0.5 }))
+  scr.position.set(-0.55, 1.5, -0.35); scr.castShadow = true; desk.add(scr)
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 16, 16), new THREE.MeshStandardMaterial({ color: '#e9dfcf', emissive: ALERT, emissiveIntensity: 0 }))
+  lamp.position.set(1.05, 1.2, -0.35); desk.add(lamp)
+  desk.position.set(dx, 0, dz); scene.add(desk)
+  const b = bean(x.color)
+  b.scale.setScalar(1.25)
+  const home = new THREE.Vector3(dx, 0, dz - 1.15)
+  b.position.copy(home); b.rotation.y = 0; scene.add(b)
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 0.78, 40), new THREE.MeshBasicMaterial({ color: ALERT, transparent: true, opacity: 0 }))
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.06; b.add(ring)
+  W[x.id] = { x, b, desk, scr, lamp, ring, home, stacks: new Map(), errand: false, shake: 0, sofa: SOFA[i % 2] }
+  for (const [f, n] of x.holds) setStack(W[x.id], f, n)
+}
+
+// held files: paper stacks on the desk, height by lines
+function setStack(w, file, lines) {
+  let s = w.stacks.get(file)
+  if (!s) {
+    s = new THREE.Group()
+    const p = box(0.36, 1, 0.46, paperM); p.position.y = 0.5; s.add(p)
+    const band = box(0.38, 0.05, 0.48, clay(w.x.color)); s.add(band)
+    s.userData = { p, band }
+    w.desk.add(s); w.stacks.set(file, s)
+    layout(w)
+  }
+  const h = Math.min(0.08 + lines / 120, 0.9)
+  s.userData.p.scale.y = h; s.userData.p.position.y = 1.06 + h / 2; s.userData.band.position.y = 1.06 + h + 0.02
+}
+function layout(w) {
+  let i = 0
+  for (const s of w.stacks.values()) { s.position.set(0.05 + (i % 4) * 0.42, 0, 0.25 - Math.floor(i / 4) * 0.5); i++ }
+}
+function clearStacks(w) { for (const s of w.stacks.values()) w.desk.remove(s); w.stacks.clear() }
+
+// board: four columns, two cards a row
+const COLS = ['In Progress', 'Blocked', 'To Do', 'Done']
+const BW = 13, BY0 = 0, BH = 4.6
+// billboard over the back corner, face to the camera
+const board = new THREE.Group(); board.position.set(-11.6, 0.9, -11.6); board.lookAt(30, 28.9, 30); scene.add(board)
+const cork = box(BW, BH, 0.14, clay('#c9b08a')); cork.position.y = BY0 + BH / 2; board.add(cork)
+const frame = box(BW + 0.3, BH + 0.3, 0.1, clay('#a89474')); frame.position.set(0, BY0 + BH / 2, -0.08); board.add(frame)
+const colX = (i) => -BW / 2 + BW / 8 + i * BW / 4
+COLS.forEach((c, i) => {
+  const h = textPlane(c, { w: 3, size: 64, color: c === 'Blocked' ? ALERT : '#4d463c' }); h.rotation.x = 0; h.position.set(colX(i) - 0.35, BY0 + BH - 0.32, 0.09); board.add(h)
+  if (i) { const d = box(0.04, BH - 0.3, 0.02, clay('#b39a75')); d.position.set(colX(i) - BW / 8, BY0 + BH / 2 - 0.1, 0.08); board.add(d) }
+})
+const CARD = {}
+const cardM = { 'In Progress': '#fbf8f1', Blocked: '#fbe4d6', 'To Do': '#f3eee3', Done: '#e3dccd' }
+for (const t of sim.tasks) {
+  const g = new THREE.Group()
+  const mat = clay(cardM[t.status], { emissive: '#000000', emissiveIntensity: 0 })
+  const c = box(1.6, 0.78, 0.05, mat); g.add(c)
+  const a = textPlane(t.id, { w: 1.5, size: 70, color: '#2b2722' }); a.rotation.x = 0; a.position.set(0, 0.17, 0.035); g.add(a)
+  const b = textPlane(t.title, { w: 1.5, size: 50, color: '#6f675b' }); b.rotation.x = 0; b.position.set(0, -0.15, 0.035); g.add(b)
+  const pin = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), clay(t.status === 'Blocked' ? ALERT : '#8c8374')); pin.position.set(0, 0.33, 0.06); g.add(pin)
+  g.userData = { pick: { task: t.id }, mat, pin, to: new THREE.Vector3(), lift: 0 }
+  board.add(g); CARD[t.id] = g
+}
+function layoutCards(snap) {
+  const n = {}
+  for (const t of sim.tasks) {
+    const i = COLS.indexOf(t.status), k = (n[t.status] = (n[t.status] ?? -1) + 1)
+    const g = CARD[t.id], u = g.userData
+    u.to.set(colX(i) + (k % 2 ? 0.85 : -0.85), BY0 + BH - 1.0 - Math.floor(k / 2) * 0.92, 0.12)
+    u.mat.color.set(cardM[t.status]); u.pin.material.color.set(t.status === 'Blocked' ? ALERT : '#8c8374')
+    if (snap) g.position.copy(u.to)
+  }
+}
+layoutCards(true)
+// strings: held card -> holder's desk lamp, a sag in the middle
+const STR = new THREE.Group(); scene.add(STR)
+function strings() {
+  STR.clear()
+  for (const t of sim.tasks) for (const h of t.holders ?? []) {
+    const w = W[h]; if (!w) continue
+    const a = board.localToWorld(CARD[t.id].userData.to.clone()).setY(CARD[t.id].userData.to.y - 0.38), b = w.lamp.getWorldPosition(new THREE.Vector3())
+    const pts = Array.from({ length: 40 }, (_, i) => { const k = i / 39; return a.clone().lerp(b, k).add(new THREE.Vector3(0, -Math.sin(Math.PI * k) * 1.1, 0)) })
+    const on = !picked || picked.task === t.id || picked.session === h
+    STR.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: w.x.color, transparent: true, opacity: on ? 0.9 : 0.15 })))
+  }
+}
+// rugs: a task's patch under its holders' desks
+const RUG = {}
+for (const w of Object.values(W)) {
+  const r = box(3.6, 0.03, 3.2, clay(w.x.color, { transparent: true, opacity: 0.22 })); r.position.set(w.desk.position.x, 0.07, w.desk.position.z - 0.35); r.receiveShadow = true; scene.add(r); RUG[w.x.id] = r
+  w.desk.userData.pick = { session: w.x.id }; w.b.userData.pick = { session: w.x.id }
+}
+const held = (id) => !!sim.byId[id].taskId && sim.taskById[sim.byId[id].taskId].holders?.includes(id)
+
+let picked = null
+function pick(s, fromDock) {
+  picked = s
+  if (!fromDock) dock.inspect(s)
+  for (const g of Object.values(CARD)) g.userData.lift = 0
+  if (s?.task) { CARD[s.task].userData.lift = 1; nav.flyTo(board.localToWorld(CARD[s.task].userData.to.clone()).setY(2), 1.6) }
+  if (s?.session) { const t = sim.byId[s.session].taskId; if (t) CARD[t].userData.lift = 1; nav.flyTo(W[s.session].desk.position.clone().setY(1), 1.6) }
+  strings()
+}
+const tip = (p) => {
+  if (p.session) { const x = sim.byId[p.session]; return `<b>${x.name}</b> <span>${x.taskId ?? ''} ${x.task}</span>` }
+  const t = sim.taskById[p.task]; return `<b>${t.id} ${t.title}</b><br><span>${t.status}${t.on ? ` · on ${t.on}` : ''} · ${t.files.size} files · ${t.commits.length} commits</span>`
+}
+setTimeout(() => { const q = Object.fromEntries(new URLSearchParams(location.hash.slice(1))); if (Object.keys(q).length) pick(q) }, 1200)
+board.updateMatrixWorld(true)
+const nav = navigate(S, { pickables: () => [...Object.values(CARD), ...Object.values(W).flatMap((w) => [w.desk, w.b])], onPick: (p) => pick(p), tip })
+strings()
+
+const head = (w) => w.b.position.clone().add(new THREE.Vector3(0, 1.75, 0))
+
+sim.on((e) => {
+  const w = W[e.who] || W[e.from]
+  if (e.type === 'edit') {
+    setStack(w, e.file, w.x.holds.get(e.file))
+    w.scr.material.emissiveIntensity = 1.2
+    const s = w.stacks.get(e.file); if (s) s.userData.bump = 1
+  }
+  if (e.type === 'msg') {
+    const to = W[e.to]
+    const plane = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.5, 4), clay('#fffdf8'))
+    plane.castShadow = true
+    const a = head(w), b = head(to)
+    fly(plane, 1.4, (k, o) => { const p = arc(a, b, ease(k), 3); o.position.copy(p); o.lookAt(arc(a, b, Math.min(ease(k) + 0.02, 1), 3)); o.rotateX(Math.PI / 2) })
+  }
+  if (e.type === 'clash') {
+    const o = W[e.other]
+    w.shake = o.shake = 1.4
+    const a = head(w).setY(1.4), b = head(o).setY(1.4)
+    const g = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 30 }, (_, i) => arc(a, b, i / 29, 1.2)))
+    const line = new THREE.Line(g, new THREE.LineDashedMaterial({ color: ALERT, dashSize: 0.25, gapSize: 0.15, transparent: true }))
+    line.computeLineDistances()
+    fly(line, 2.4, (k, l) => (l.material.opacity = 1 - k * k))
+    const s = o.stacks.get(e.file); if (s) s.userData.flash = 2.4
+  }
+  if (e.type === 'claim' || e.type === 'close') { layoutCards(); setTimeout(strings, 900) }
+  if (e.type === 'commit' && e.task) {
+    // the commit's sha pins to its card
+    const g = CARD[e.task], tag = box(0.3, 0.12, 0.02, clay(w.x.color)); const n = sim.taskById[e.task].commits.length
+    tag.position.set(-0.65 + ((n - 1) % 5) * 0.32, -0.42, 0.04); g.add(tag); g.userData.lift = Math.max(g.userData.lift, 0.6)
+  }
+  if (e.type === 'commit') {
+    const parcel = box(0.6, 0.45, 0.6, clay(w.x.color)); parcel.position.set(0, 1.45, 0.45)
+    clearStacks(w)
+    w.b.add(parcel)
+    w.errand = true
+    goTo(w.b, 0.9 * Math.sign(w.home.x), 0.9 * Math.sign(w.home.z), () => {
+      w.b.remove(parcel)
+      lid.material.emissiveIntensity = 2
+      const p = parcel.clone(); p.position.set(0, 1.6, 0)
+      fly(p, 0.5, (k, o) => { o.position.y = 1.6 - k * 1.2; o.scale.setScalar(1 - k) })
+      goTo(w.b, w.home.x, w.home.z, () => { w.errand = false; w.b.rotation.y = 0 })
+    })
+  }
+  if (e.type === 'state' && !w.errand) {
+    if (e.state === 'idle') goTo(w.b, w.sofa[0] * 1.15 + Math.sign(w.home.x) * 0.6, w.sofa[1] * 1.15 + Math.sign(w.home.z) * 0.6)
+    else if (w.b.position.distanceTo(w.home) > 0.1) goTo(w.b, w.home.x, w.home.z, () => (w.b.rotation.y = 0))
+  }
+})
+
+S.onFrame((dt, t) => {
+  lid.material.emissiveIntensity *= 0.96
+  for (const [id, g] of Object.entries(CARD)) {
+    const u = g.userData
+    g.position.lerp(u.to, Math.min(1, dt * 3))
+    g.position.z = u.to.z + u.lift * 0.25
+    u.mat.emissive.set(u.lift ? '#ffb36b' : '#000000'); u.mat.emissiveIntensity = u.lift * 0.35
+    if (!picked || picked.task !== id) u.lift = Math.max(0, u.lift - dt * 0.5)
+  }
+  for (const w of Object.values(W)) RUG[w.x.id].material.opacity = held(w.x.id) ? (picked?.task && picked.task === w.x.taskId ? 0.55 : 0.22) : 0.05
+  for (const w of Object.values(W)) {
+    const { x, b } = w, u = b.userData
+    const moving = walk(b, dt)
+    const at = !moving && b.position.distanceTo(w.home) < 0.1
+    const p = x.id.charCodeAt(4) * 0.7
+    // pose
+    let y = 0, lean = 0, handY = 0.65
+    if (moving) y = Math.abs(Math.sin(t * 12 + p)) * 0.12
+    else if (x.state === 'work' && at) { y = Math.sin(t * 7 + p) * 0.03; lean = 0.12; handY = 0.75 + Math.abs(Math.sin(t * 14 + p)) * 0.08 }
+    else if (x.state === 'blocked') { y = Math.abs(Math.sin(t * 5 + p)) * 0.16; handY = 1.55 + Math.sin(t * 10) * 0.08 }
+    else if (x.state === 'wait') { const o = sim.sessions.find((s) => s.id !== x.id && s.state === 'work' && s.repo === x.repo) || sim.sessions[0]; b.rotation.y += (Math.atan2(W[o.id].b.position.x - b.position.x, W[o.id].b.position.z - b.position.z) - b.rotation.y) * 0.05; lean = -0.05 }
+    else if (x.state === 'idle' && !moving) { y = -0.15; lean = -0.2 }
+    if (w.shake > 0) { w.shake -= dt; b.position.x += Math.sin(t * 60) * 0.01 }
+    u.body.position.y = 0.7 + y
+    u.body.rotation.x += (lean - u.body.rotation.x) * 0.15
+    u.hand.position.y += (handY + y - u.hand.position.y) * 0.25
+    w.ring.material.opacity = x.state === 'blocked' ? 0.55 + Math.sin(t * 6) * 0.35 : 0
+    w.lamp.material.emissiveIntensity = x.state === 'blocked' ? 1.6 + Math.sin(t * 6) : 0
+    w.scr.material.emissiveIntensity += ((x.state === 'work' ? 0.35 : 0.04) - w.scr.material.emissiveIntensity) * 0.04
+    for (const [f, s] of w.stacks) {
+      const d = s.userData
+      d.bump = Math.max(0, (d.bump || 0) - dt * 2)
+      s.position.y = Math.sin(d.bump * Math.PI) * 0.25
+      if (d.flash > 0) { d.flash -= dt; d.p.material = d.flash > 0 && Math.sin(t * 16) > 0 ? alertM : paperM }
+      s.userData.band.scale.setScalar(f === x.focus ? 1.25 : 1)
+    }
+    const [sx, sy, vis] = S.project(head(w))
+    hud.place(x.id, sx, sy, vis)
+  }
+  hud.frame()
+})
+</script>
+</body>
+</html>

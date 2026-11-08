@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Peers · tower files</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Patrick+Hand&display=swap" rel="stylesheet">
+<style>
+:root{--hud-bg:#fffaf2e6;--hud-fg:#2b2722;--hud-dim:#7a7266;--hud-line:#e2d8c6;--hud-alert:#e8622c;--hud-font:"Patrick Hand",ui-sans-serif,sans-serif}
+.hud{font-size:14px!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#f6f1e3 repeating-linear-gradient(0deg,transparent 0 23px,#d9e3ef 23px 24px)}
+svg{position:fixed;left:10px;top:46px;touch-action:none}
+</style>
+</head>
+<body>
+<svg id="svg"></svg>
+<script type="module">
+import { createSim } from './sim.js'
+import { createHud } from './hud.js'
+import { createDock } from './dock.js'
+import { navChrome } from './chrome.js'
+import { sketchTower, svgView, towerInput, keepOf, placeTags } from './tower.js'
+
+// sketch tower: folder height = lines; click a folder for its live diff, a floor to zoom in
+const sim = createSim()
+const hud = createHud(sim, { title: 'peers · tower files' })
+const dock = createDock(sim, { tasks: true, onPick: (s) => pick(s, true) })
+const svg = document.getElementById('svg')
+const ins = dock.inset()
+Object.assign(svg.style, { width: `${innerWidth - ins.right - 20}px`, height: `${innerHeight - ins.bottom - 46 - 30}px` })
+const tall = innerWidth - ins.right < innerHeight - ins.bottom
+addEventListener('resize', () => location.reload())
+const T = await sketchTower(sim, svg, { W: tall ? 360 : 640, sized: true })
+const view = svgView(svg, [0, 0, T.W, T.H])
+const { tip } = navChrome({ reset: () => { view.reset(); pick(null) } })
+
+// zoom box: the floor's height, centred on x
+let picked = null
+function pick(s, fromDock) {
+  picked = s
+  if (!fromDock) dock.inspect(s)
+  const keep = keepOf(sim, s)
+  for (const k in T.FOLD) T.FOLD[k].dim = !!keep && !keep.has(k)
+  input.focus(s)
+}
+const input = towerInput(sim, T, svg, view, { pick, tip })
+
+let last = performance.now()
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05); last = now
+  T.tick(dt, now / 1000)
+  placeTags(T, svg, hud)
+  hud.frame()
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+</script>
+</body>
+</html>

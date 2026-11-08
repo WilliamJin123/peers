@@ -31,6 +31,21 @@ export const SESSIONS = [
   { id: 'cc-e2c4', name: 'runs', color: '#8a7fc0', repo: 'engine', task: 'Dogfood run triage' },
 ]
 
+// board tasks: held ones map to SESSIONS[].task; the rest wait on the board
+export const TASKS = [
+  { id: 'WA-1154', title: 'Vireo chat agent', repo: 'wren', status: 'In Progress' },
+  { id: 'WA-1144', title: 'Shell side chat', repo: 'wren', status: 'In Progress' },
+  { id: 'WA-1181', title: 'Ledger size cap', repo: 'peers', status: 'In Progress' },
+  { id: 'WA-1140', title: 'Hero batch 5', repo: 'vireo', status: 'In Progress' },
+  { id: 'WA-1157', title: 'Follow by person', repo: 'engine', status: 'In Progress' },
+  { id: 'WA-1133', title: 'Dogfood run triage', repo: 'engine', status: 'In Progress' },
+  { id: 'WA-1048', title: 'Meta push flows', repo: 'wren', status: 'Blocked', on: 'Meta review' },
+  { id: 'WA-1123', title: 'Birdwatch in side chat', repo: 'engine', status: 'Blocked', on: 'William picks' },
+  { id: 'WA-1178', title: 'Claims sweep', repo: 'peers', status: 'To Do' },
+  { id: 'WA-1180', title: 'Trace task to commits', repo: 'peers', status: 'To Do' },
+  { id: 'WA-1143', title: 'Drop column', repo: 'vireo', status: 'To Do' },
+]
+
 export const files = (repo) => {
   const r = REPOS.find((x) => x.id === repo)
   return r.dirs.flatMap((d) => FILES[d].map((f) => `${d}/${f}`))
@@ -58,10 +73,18 @@ export function createSim({ seed = 7, tickMs } = {}) {
   const q = new URLSearchParams(location.search)
   const speed = Number(q.get('speed') || 1)
   const r = rng(seed)
+  const rs = rng(seed + 101)
+  const rngSize = () => rs()
   const pick = (a) => a[Math.floor(r() * a.length)]
   const subs = new Set()
   const log = []
-  const s = SESSIONS.map((x) => ({ ...x, state: 'work', since: 0, holds: new Map(), focus: null, commits: 0 }))
+  const s = SESSIONS.map((x) => ({ ...x, state: 'work', since: 0, holds: new Map(), focus: null, commits: 0, taskId: TASKS.find((k) => k.title === x.task)?.id }))
+  // live board: holders, files touched, commits per task
+  const tasks = TASKS.map((k) => ({ ...k, holders: s.filter((x) => x.taskId === k.id).map((x) => x.id), files: new Set(), commits: [] }))
+  const taskById = Object.fromEntries(tasks.map((k) => [k.id, k]))
+  // file sizes in lines, keyed repo/path; edits per file, newest last
+  const lines = new Map(), edits = new Map()
+  for (const r of REPOS) for (const f of files(r.id)) lines.set(`${r.id}/${f}`, 30 + Math.floor(rngSize() * 620))
   const byId = Object.fromEntries(s.map((x) => [x.id, x]))
   let t = 0
   let sha = 0x3a91c
@@ -85,7 +108,7 @@ export function createSim({ seed = 7, tickMs } = {}) {
     const fs = files(x.repo)
     for (let i = 0; i < 2; i++) {
       const f = pick(fs)
-      if (!holderOf(x.repo, f)) x.holds.set(f, 5 + Math.floor(r() * 30))
+      if (!holderOf(x.repo, f)) { x.holds.set(f, 5 + Math.floor(r() * 30)); if (x.taskId) taskById[x.taskId].files.add(`${x.repo}/${f}`) }
     }
   }
 
@@ -104,7 +127,8 @@ export function createSim({ seed = 7, tickMs } = {}) {
       if (x.state === 'idle') {
         if (age > 5 && r() < 0.2) {
           setState(x, 'work')
-          emit({ type: 'claim', who: x.id, task: x.task })
+          if (x.taskId) { const k = taskById[x.taskId]; k.status = 'In Progress'; if (!k.holders.includes(x.id)) k.holders.push(x.id) }
+          emit({ type: 'claim', who: x.id, task: x.task, id: x.taskId })
         }
         continue
       }
@@ -124,21 +148,30 @@ export function createSim({ seed = 7, tickMs } = {}) {
         if (!x.holds.has(f)) emit({ type: 'take', who: x.id, file: f, repo: x.repo })
         x.holds.set(f, (x.holds.get(f) || 0) + add + rem)
         x.focus = f
-        emit({ type: 'edit', who: x.id, file: f, repo: x.repo, add, rem })
+        const key = `${x.repo}/${f}`
+        lines.set(key, Math.max(5, lines.get(key) + add - rem))
+        const at = Math.floor(r() * lines.get(key))
+        const ed = { who: x.id, add, rem, at, t }
+        edits.set(key, [...(edits.get(key) || []), ed].slice(-12))
+        if (x.taskId) taskById[x.taskId].files.add(key)
+        emit({ type: 'edit', who: x.id, file: f, repo: x.repo, add, rem, at, lines: lines.get(key), task: x.taskId })
       } else if (roll < 0.5 && x.holds.size >= 2) {
         const fs = [...x.holds.keys()]
         x.holds.clear()
         x.focus = null
         x.commits++
         sha += 0x1f3 + Math.floor(r() * 0xfff)
-        emit({ type: 'commit', who: x.id, files: fs, repo: x.repo, sha: sha.toString(16).slice(-7), msg: pick(COMMITS) })
+        const c = { type: 'commit', who: x.id, files: fs, repo: x.repo, sha: sha.toString(16).slice(-7), msg: pick(COMMITS), task: x.taskId }
+        if (x.taskId) taskById[x.taskId].commits.push(c.sha)
+        emit(c)
       } else if (roll < 0.58) {
         const to = pick(s.filter((y) => y !== x))
         emit({ type: 'msg', from: x.id, to: to.id, text: pick(LINES) })
       } else if (roll < 0.6) {
         setState(x, 'blocked', { why: pick(['permission: git push', 'permission: rm -rf dist', 'asks: which tone?']) })
       } else if (roll < 0.64 && x.holds.size === 0) {
-        emit({ type: 'close', who: x.id, task: x.task })
+        if (x.taskId) { const k = taskById[x.taskId]; k.holders = k.holders.filter((h) => h !== x.id); if (!k.holders.length) k.status = 'Done' }
+        emit({ type: 'close', who: x.id, task: x.task, id: x.taskId })
         setState(x, 'idle')
       }
     }
@@ -149,6 +182,10 @@ export function createSim({ seed = 7, tickMs } = {}) {
   return {
     sessions: s,
     byId,
+    tasks,
+    taskById,
+    lines,
+    edits,
     log,
     tickMs: ms,
     on: (f) => (subs.add(f), () => subs.delete(f)),
@@ -172,4 +209,17 @@ export const label = (e, byId) => {
     case 'close': return `${n(e.who)} closes “${e.task}”`
   }
   return ''
+}
+
+// fake source line for a diff view: same file + line number gives the same text
+const WORDS = ['ledger', 'batch', 'rows', 'session', 'file', 'hold', 'commit', 'map', 'filter', 'next', 'state', 'emit', 'cap', 'size', 'id', 'peer', 'take', 'drop']
+export function codeLine(file, n) {
+  // int hash: a float reduce overflows on long paths and drops n
+  const h = [...file].reduce((a, c) => (Math.imul(a, 31) + c.charCodeAt(0)) | 0, 0)
+  const g = rng((h ^ Math.imul(n + 1, 2654435761)) >>> 0)
+  const ind = '  '.repeat(Math.floor(g() * 3))
+  const k = 2 + Math.floor(g() * 4)
+  const w = Array.from({ length: k }, () => WORDS[Math.floor(g() * WORDS.length)])
+  const shape = Math.floor(g() * 4)
+  return ind + (shape === 0 ? `const ${w[0]} = ${w.slice(1).join('.')}()` : shape === 1 ? `if (${w[0]}.${w[1]}) ${w.slice(2).join(' ') || 'return'}` : shape === 2 ? `${w[0]}(${w.slice(1).join(', ')})` : `return ${w.join(' ')}`)
 }
