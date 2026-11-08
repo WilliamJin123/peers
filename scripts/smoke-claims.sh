@@ -177,4 +177,13 @@ X r1 claim TASK-11 >/dev/null
 as gggg7777-0 r1 claim TASK-11 >/dev/null
 check 'close past another machine' "$(as gggg7777-0 r1 close -r g 2>&1 | grep -c 'm2/cc-xxxx also had it')" '1'
 check 'close past another machine: Done' "$(who TASK-11)" 'Done|'
+# A machine gone for good: its mark alone holds a task, and the board shows no change past remoteTtlDays (here 10 s).
+# m1's sweep frees it; m2, back, is told and claims again.
+echo '{"who":"m1","remoteTtlDays":0.0001}' >"$HOME/.claude/peers/config.json"
+backlog task create twelve >/dev/null
+X r1 claim TASK-12 >/dev/null
+sleep 10
+A r1 sweep >/dev/null 2>&1
+check 'a quiet machine is freed' "$(who TASK-12)" 'To Do|'
+check 'm2 is told it was freed' "$(X r1 sweep 2>&1 | grep -c 'freed as quiet.*TASK-12')" '1'
 exit $fails

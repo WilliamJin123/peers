@@ -354,7 +354,10 @@ const sweep = async () => {
       const held = (boardHeld = await tryBoard('sweep', () => board.held()))
       if (!held) return []
       const [now, running, names] = now3()
-      const { writes, notes, dead, settled } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who), board.covers, who, new Set(allClosing()))
+      const { writes, notes, dead, settled } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who), board.covers, who, new Set(allClosing()), {
+        now,
+        ttl: (Number(config.remoteTtlDays) || 7) * 86400e3,
+      })
       for (const t of settled) dropClosing(t)
       const failed = new Set()
       for (const w of writes) {
@@ -373,12 +376,19 @@ const sweep = async () => {
           process.stderr.write(`peers sweep: ${w.ticket} Done (the last holder is gone; every holder was done)\n`)
           continue
         }
-        const r = await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket, w.queue)))
+        const r = await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket, w.queue, w.expire)))
         // false: another machine holds it (seen now or at the sweep's read): the task and its dead claim stay.
         if (r === null || (w.call === 'release' && r === false)) failed.add(w.ticket)
         if (r === null) continue
         act.log('sweep', w.call === 'release' ? { ...w, queued: r !== false } : w)
-        const what = w.call === 'hold' ? `held by ${w.holders.join(', ')}` : r === false ? 'this machine lets go; another still holds it' : 'back to To Do (no session holds it)'
+        const what =
+          w.call === 'hold'
+            ? `held by ${w.holders.join(', ')}`
+            : r === false
+              ? 'this machine lets go; another still holds it'
+              : w.expire
+                ? `back to To Do (freed ${w.expire.join(', ')}: another machine, quiet past ${Number(config.remoteTtlDays) || 7} d)`
+                : 'back to To Do (no session holds it)'
         process.stderr.write(`peers sweep: ${w.ticket} ${what}\n`)
       }
       // Read again: a session that came back (/resume) moved its claim to a new id, and the old file has no ticket.
