@@ -9,16 +9,18 @@ import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { compact, holding, isLive, joinEntry, nameOf } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
-import { configSync, runningSync } from '../lib/io.mjs'
+import { claimsOf, heldLines, plan } from '../lib/claims.mjs'
+import { configSync, namesSync, runningSync } from '../lib/io.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
 import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/lines.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
-(--whole takes the file as it is). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
+(--whole takes the file as it is). held: who holds each task (from the ledgers). sweep: the board's In Progress, held to the
+ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
 tui: the same view full screen in any terminal (no agent session needed).
   match: only the repos it names. A path (., ../lander, ~/x) is that folder; a name is a repo name, part of one,
@@ -194,16 +196,14 @@ const drain = async () => {
   for (const r of await act.drain(send))
     if (!r.ok) process.stderr.write(`peers: ${r.s.call} to ${r.s.args[0]} not sent${r.last ? ', gave up' : ', tries again on the next peers command'}: ${r.err}\n`)
 }
-// Live sessions in any repo that hold a ticket: a task can span repos.
-const holders = ticket => {
+// Every ledger in every repo, mine too: the one truth for who holds which task.
+const allLedgers = () => {
   const base = join(homedir(), '.claude', 'peers')
-  const now = Date.now()
-  const running = runningSync(homedir())
   return readdirSync(base, { withFileTypes: true })
     .filter(d => d.isDirectory())
     .flatMap(d =>
       readdirSync(join(base, d.name))
-        .filter(f => f.endsWith('.json') && f !== `${session}.json`)
+        .filter(f => f.endsWith('.json'))
         .map(f => {
           try {
             return JSON.parse(readFileSync(join(base, d.name, f), 'utf8'))
@@ -212,8 +212,28 @@ const holders = ticket => {
           }
         }),
     )
-    .filter(p => p?.ticket === ticket && isLive(p, now, running))
+    .filter(Boolean)
 }
+// Live sessions in any repo that hold a ticket: a task can span repos.
+const holders = ticket => {
+  const now = Date.now()
+  const running = runningSync(homedir())
+  return allLedgers().filter(p => p.session !== session && p.ticket === ticket && isLive(p, now, running))
+}
+// The board's In Progress, held to the ledgers: holder marks follow the claims; a task only dead claims name goes back to To Do.
+const sweep = async () => {
+  if (!board.held || !board.on()) return []
+  const held = await tryBoard('sweep', () => board.held())
+  if (!held) return []
+  const { writes, notes } = plan(held, claimsOf(allLedgers(), Date.now(), runningSync(homedir()), namesSync(homedir())))
+  for (const w of writes) {
+    if ((await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.id, w.holders) : board.release(w.id)))) === null) continue
+    act.log('sweep', w)
+    process.stderr.write(`peers sweep: ${w.id} ${w.call === 'hold' ? `held by ${w.holders.join(', ')}` : 'back to To Do (no session holds it)'}\n`)
+  }
+  return notes
+}
+const heldNow = () => heldLines(allLedgers(), Date.now(), runningSync(homedir()), namesSync(homedir()))
 // Line sets of a file: mine, and every live peer's that has not committed it yet.
 // f's lines that differ from HEAD: a peer whose lines are all in HEAD (committed by any route) holds nothing.
 const liveOf = f => ({
@@ -584,6 +604,20 @@ switch (cmd) {
     const out = await tryBoard('ready', () => board.ready())
     if (out === null) process.exit(1)
     console.log(String(out).trimEnd())
+    const notes = await sweep()
+    const held = heldNow()
+    if (held.length) console.log(`\nHeld:\n${held.map(x => `  ${x}`).join('\n')}`)
+    for (const n of notes) process.stderr.write(`peers: ${n}\n`)
+    break
+  }
+  case 'held': {
+    const held = heldNow()
+    console.log(held.length ? held.join('\n') : 'no session holds a task')
+    break
+  }
+  case 'sweep': {
+    const notes = await sweep()
+    for (const n of notes) console.log(n)
     break
   }
   case 'claim': {
@@ -591,10 +625,25 @@ switch (cmd) {
     // Jira keys are upper case: a trailer with `proj-1` links to nothing.
     const id = board.key ? board.key(argv[1]) : argv[1]
     let got
+    // The holder marks the board shows: every live claim on id, mine counted as made now.
+    const mine = { ...l, session, ticket: id, updated: Date.now() }
+    const names = claimsOf([...allLedgers().filter(p => p.session !== session), mine], Date.now(), runningSync(homedir()), namesSync(homedir())).live.get(id) ?? []
     try {
-      got = await board.claim(id)
+      got = await board.claim(id, names)
     } catch (e) {
       die(`peers claim: no task ${id} (${e.message})`)
+    }
+    // One task per session: the claim moves off this session's ledgers in other repos (before 0.20.0 it stayed there).
+    for (const d of readdirSync(join(homedir(), '.claude', 'peers'), { withFileTypes: true })) {
+      const p = join(homedir(), '.claude', 'peers', d.name, `${session}.json`)
+      if (!d.isDirectory() || p === own) continue
+      const o = readParsed(p)
+      if (!o?.ticket) continue
+      delete o.ticket
+      delete o.title
+      delete o.claimed
+      writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify(o))
+      renameSync(`${p}.${process.pid}.tmp`, p)
     }
     l.ticket = id
     l.claimed = Date.now()
@@ -641,6 +690,7 @@ switch (cmd) {
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
         : a.op === 'close' ? `close ${a.ticket}: ${a.reason}`
         : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`
+        : a.op === 'sweep' ? `sweep ${a.id} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : 'back to To Do'}`
         : a.op
       if (what) console.log(`${t}  ${what}`)
     }

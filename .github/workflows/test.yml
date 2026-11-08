@@ -17,6 +17,7 @@ jobs:
       - run: node lib/core.test.mjs
       - run: node lib/tui.test.mjs
       - run: node lib/board.test.mjs
+      - run: node lib/claims.test.mjs
       - run: node lib/actions.test.mjs
       - run: node lib/view.test.mjs
       - run: node lib/platform.test.mjs

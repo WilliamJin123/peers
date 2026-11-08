@@ -7,7 +7,7 @@ Each session gets a ledger of the files it edited. The ledger drives four things
 - **Scoped git.** `peers status`, `peers diff`, `peers commit -m "..."` see only this session's files. In a file a peer also edits, they see only this session's hunks. `peers check` runs the repo's gate on that commit in a side worktree.
 - **Peer awareness.** When a peer edited the exact file this session reads or edits, the tool result carries one line: who, when, committed or not. Nothing else reaches the model.
 - **A band above the prompt.** Live peers by name, their task, file counts, last edit. Zero tokens.
-- **Tasks.** `peers ready` lists open work. `peers claim <id>` binds a task and sets it In Progress. Every `peers commit` appends the sha to its notes. `peers close` marks it Done; it stays on the board in the Done column; it refuses while an acceptance criterion or DoD item is unchecked, or while another live session holds the same task (`--force` overrides). The agent never edits the task by hand. The board is [Backlog.md](https://github.com/MrLesk/Backlog.md) by default: one Markdown file per task. Point `BACKLOG_CWD` at the board folder so every repo uses one board. Without `backlog` on PATH, the task id still lands in the commit trailer. Jira, GitHub Issues or your own board: see Task boards.
+- **Tasks.** `peers ready` lists open work. `peers claim <id>` binds a task and sets it In Progress. Every `peers commit` appends the sha to its notes. The board shows who holds it: `@peers:<session>` beside the task's own assignees on Backlog.md, a comment on GitHub or Jira; the session's ledger stays the one truth. `peers held` lists who holds what. `peers sweep` (also run by `peers ready`) holds the board to the ledgers: marks follow live claims, and a task whose holder is gone (closed over 2 h) goes back to To Do; one set In Progress by hand is only reported. A session holds one task: a new claim replaces the last. `peers close` marks it Done; it stays on the board in the Done column; it refuses while an acceptance criterion or DoD item is unchecked, or while another live session holds the same task (`--force` overrides). The agent never edits the task by hand. The board is [Backlog.md](https://github.com/MrLesk/Backlog.md) by default: one Markdown file per task. Point `BACKLOG_CWD` at the board folder so every repo uses one board. Without `backlog` on PATH, the task id still lands in the commit trailer. Jira, GitHub Issues or your own board: see Task boards.
 
 The system prompt gets one short rule: peers' changes in files you did not touch are theirs, never mention, revert or commit them.
 
@@ -96,6 +96,8 @@ Tested live on cursor-agent 2026.09.18. Codex is tested with fixtures from its h
 ```
 peers ready                 # open tasks
 peers claim wa-b5f          # bind a task, set In Progress
+peers held                  # who holds each task
+peers sweep                 # board In Progress = live claims
 peers status                # your dirty files, peers hidden
 peers diff
 peers commit -m "add thing" # your files, your hunks only, trailer Ticket: wa-b5f
