@@ -263,8 +263,9 @@ function ticketShas(ticket) {
     if (shas.length) found.push({ name: basename(r), shas })
   }
   // No trailer (a commit made without a bound ticket): the ledger's last sha, while HEAD still has it.
+  // Only a commit made after the claim: a claim then close with no work names no sha.
   if (!found.length) {
-    const last = l.commits.at(-1)?.sha
+    const c = l.commits.at(-1), last = c && c.at >= (l.claimed ?? 0) ? c.sha : null
     return last && spawnSync('git', ['--no-optional-locks', 'merge-base', '--is-ancestor', last, 'HEAD']).status === 0 ? ` (${last.slice(0, 7)})` : ''
   }
   return ` (${found.map(f => (found.length > 1 ? `${f.name} ` : '') + f.shas.join(', ')).join('; ')})`
@@ -596,6 +597,7 @@ switch (cmd) {
       die(`peers claim: no task ${id} (${e.message})`)
     }
     l.ticket = id
+    l.claimed = Date.now()
     // The title travels in the ledger: the views show it without asking the board.
     if (got?.title) l.title = got.title
     else delete l.title
@@ -619,6 +621,7 @@ switch (cmd) {
     console.log(`closed ${l.ticket}: ${reason}`)
     delete l.ticket
     delete l.title
+    delete l.claimed
     save(l)
     break
   }
