@@ -4,12 +4,12 @@
 // or by `peers hook <agent>` (Codex, Cursor), both through lib/core.mjs.
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, hostname, userInfo } from 'node:os'
 import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { CLAIMS, compact, holding, isLive, joinEntry, nameOf, overlay } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
-import { claimsOf, fromLedgers, heldLines, holderName, holdersOf, plan } from '../lib/claims.mjs'
+import { awayLines, claimsOf, fromLedgers, heldLines, holderName, holdersOf, plan, whoOf } from '../lib/claims.mjs'
 import { claimsSync, configSync, namesSync, runningSync } from '../lib/io.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
@@ -176,8 +176,10 @@ function mineDirty(l) {
 }
 // Task board: lib/board.mjs, picked by `board` in ~/.claude/peers/config.json (Backlog.md by default).
 const config = configSync(homedir())
+// This machine on the board: holders are `<who>/<session name>`; the board writes touch only this machine's.
+const who = whoOf(config, userInfo().username, hostname())
 // A board that will not load fails its own calls, never `peers status` or `diff`.
-const board = await boardOf(config, join(homedir(), '.claude', 'peers')).catch(e => {
+const board = await boardOf(config, join(homedir(), '.claude', 'peers'), who).catch(e => {
   const no = () => {
     throw new Error(`board "${config.board}" did not load: ${e.message}`)
   }
@@ -302,22 +304,26 @@ const holders = ticket => {
 }
 // The board's In Progress, held to the claims: holder marks follow them; a task only a dead claim names goes back to
 // To Do, once: the dead claim goes with the write. Skipped, not waited on, while another command holds the lock.
+// Many machines: this one changes only its own holders; a task another machine holds stays, and its dead claim stays
+// until the last machine out sends the task back (release says whether it did).
+let boardHeld = null
 const sweep = async () => {
   if (!board.held || !board.on()) return []
   return (
     (await withLock(15_000, null, async () => {
-      const held = await tryBoard('sweep', () => board.held())
+      const held = (boardHeld = await tryBoard('sweep', () => board.held()))
       if (!held) return []
       const [now, running, names] = now3()
-      const { writes, notes, dead } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names), board.covers)
+      const { writes, notes, dead } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who), board.covers, who)
       const failed = new Set()
       for (const w of writes) {
-        if ((await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket)))) === null) {
-          failed.add(w.ticket)
-          continue
-        }
-        act.log('sweep', w)
-        process.stderr.write(`peers sweep: ${w.ticket} ${w.call === 'hold' ? `held by ${w.holders.join(', ')}` : 'back to To Do (no session holds it)'}\n`)
+        const r = await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket, w.queue)))
+        // false: another machine holds it (seen now or at the sweep's read): the task and its dead claim stay.
+        if (r === null || (w.call === 'release' && r === false)) failed.add(w.ticket)
+        if (r === null) continue
+        act.log('sweep', w.call === 'release' ? { ...w, queued: r !== false } : w)
+        const what = w.call === 'hold' ? `held by ${w.holders.join(', ')}` : r === false ? 'this machine lets go; another still holds it' : 'back to To Do (no session holds it)'
+        process.stderr.write(`peers sweep: ${w.ticket} ${what}\n`)
       }
       // Read again: a session that came back (/resume) moved its claim to a new id, and the old file has no ticket.
       for (const c of dead) if (!failed.has(c.ticket) && readClaim(c.session)?.claimed === c.claimed) dropClaim(c.session)
@@ -325,9 +331,11 @@ const sweep = async () => {
     })) ?? []
   )
 }
-const heldNow = () => {
+// This machine's claims, then other machines' holds from the board (the sweep's read, else one now).
+const heldNow = async () => {
   const [now, running, names] = now3()
-  return heldLines(claimsSync(homedir()), allLedgers(), now, running, names)
+  const away = board.held && board.on() ? (boardHeld ?? (await tryBoard('held', () => board.held())) ?? []) : []
+  return [...heldLines(claimsSync(homedir()), allLedgers(), now, running, names), ...awayLines(away, who)]
 }
 // Line sets of a file: mine, and every live peer's that has not committed it yet.
 // f's lines that differ from HEAD: a peer whose lines are all in HEAD (committed by any route) holds nothing.
@@ -704,13 +712,13 @@ switch (cmd) {
     if (out === null) process.exit(1)
     console.log(String(out).trimEnd())
     const notes = await sweep()
-    const held = heldNow()
+    const held = await heldNow()
     if (held.length) console.log(`\nHeld:\n${held.map(x => `  ${x}`).join('\n')}`)
     for (const n of notes) process.stderr.write(`peers: ${n}\n`)
     break
   }
   case 'held': {
-    const held = heldNow()
+    const held = await heldNow()
     console.log(held.length ? held.join('\n') : 'no session holds a task')
     break
   }
@@ -730,8 +738,8 @@ switch (cmd) {
       const c = { v: 1, session, agent: l.agent, ticket: id, title: null, claimed: now, updated: now }
       c.name = holderName(c, names)
       writeClaim(c)
-      const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names)
-      const all = live.get(id) ?? [c.name]
+      const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
+      const all = live.get(id) ?? [`${who}/${c.name}`]
       let got
       try {
         got = await board.claim(id, all)
@@ -744,7 +752,7 @@ switch (cmd) {
       // The title travels in the claim: the views show it without asking the board.
       writeClaim({ ...c, title: got?.title ?? null, updated: Date.now() })
       act.log('claim', { ticket: id, title: got?.title ?? null })
-      const others = all.filter(n => n !== c.name)
+      const others = [...all.filter(n => n !== `${who}/${c.name}`).map(n => n.slice(who.length + 1)), ...(got?.others ?? [])]
       console.log(`claimed ${id}${others.length ? ` (also held by ${others.join(', ')})` : ''}`)
     })
     break
@@ -757,8 +765,9 @@ switch (cmd) {
       // Read again under the lock: a parallel command of this session may have moved the claim.
       if (readClaim(session)?.ticket !== bound) die(`peers close: the claim moved off ${bound} while this ran. Run it again.`)
       if (!argv.includes('--force')) {
-        const still = holders(bound)
-        if (still.length) die(`peers close: ${still.map(p => holderName(p, namesSync(homedir()))).join(', ')} also works on ${bound}. Close it there last, or --force.`)
+        // This machine's other sessions, then other machines and people (the board: marks, comments, assignees).
+        const still = [...holders(bound).map(p => holderName(p, namesSync(homedir()))), ...((board.others && (await tryBoard('close', () => board.others(bound)))) || [])]
+        if (still.length) die(`peers close: ${still.join(', ')} also works on ${bound}. Close it there last, or --force.`)
         const open = (await tryBoard('close', () => board.open(bound))) ?? []
         if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
       }
@@ -785,7 +794,7 @@ switch (cmd) {
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
         : a.op === 'close' ? `close ${a.ticket}: ${a.reason}`
         : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`
-        : a.op === 'sweep' ? `sweep ${a.ticket} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : 'back to To Do'}`
+        : a.op === 'sweep' ? `sweep ${a.ticket} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : a.queued === false ? 'let go, another machine holds it' : 'back to To Do'}`
         : a.op
       if (what) console.log(`${t}  ${what}`)
     }
