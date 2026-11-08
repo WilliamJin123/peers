@@ -9,7 +9,7 @@ import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { compact, holding, isLive, joinEntry, nameOf } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
-import { claimsOf, heldLines, plan } from '../lib/claims.mjs'
+import { claimsOf, heldLines, holderName, holdersOf, plan } from '../lib/claims.mjs'
 import { configSync, namesSync, runningSync } from '../lib/io.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
@@ -199,6 +199,7 @@ const drain = async () => {
 // Every ledger in every repo, mine too: the one truth for who holds which task.
 const allLedgers = () => {
   const base = join(homedir(), '.claude', 'peers')
+  if (!existsSync(base)) return []
   return readdirSync(base, { withFileTypes: true })
     .filter(d => d.isDirectory())
     .flatMap(d =>
@@ -214,22 +215,33 @@ const allLedgers = () => {
     )
     .filter(Boolean)
 }
-// Live sessions in any repo that hold a ticket: a task can span repos.
-const holders = ticket => {
-  const now = Date.now()
-  const running = runningSync(homedir())
-  return allLedgers().filter(p => p.session !== session && p.ticket === ticket && isLive(p, now, running))
+// Other sessions whose claim on ticket holds now, in any repo: a task can span repos.
+const holders = ticket => holdersOf(allLedgers(), ticket, Date.now(), runningSync(homedir()), session)
+// This session's ledgers in other repos: [{ path, o }].
+const myOthers = () =>
+  (existsSync(join(homedir(), '.claude', 'peers')) ? readdirSync(join(homedir(), '.claude', 'peers'), { withFileTypes: true }) : [])
+    .filter(d => d.isDirectory())
+    .map(d => join(homedir(), '.claude', 'peers', d.name, `${session}.json`))
+    .filter(p => p !== own)
+    .map(p => ({ path: p, o: readParsed(p) }))
+    .filter(x => x.o)
+const unbind = ({ path, o }) => {
+  delete o.ticket
+  delete o.title
+  delete o.claimed
+  writeFileSync(`${path}.${process.pid}.tmp`, JSON.stringify(o))
+  renameSync(`${path}.${process.pid}.tmp`, path)
 }
 // The board's In Progress, held to the ledgers: holder marks follow the claims; a task only dead claims name goes back to To Do.
 const sweep = async () => {
   if (!board.held || !board.on()) return []
   const held = await tryBoard('sweep', () => board.held())
   if (!held) return []
-  const { writes, notes } = plan(held, claimsOf(allLedgers(), Date.now(), runningSync(homedir()), namesSync(homedir())))
+  const { writes, notes } = plan(held, claimsOf(allLedgers(), Date.now(), runningSync(homedir()), namesSync(homedir())), board.covers)
   for (const w of writes) {
-    if ((await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.id, w.holders) : board.release(w.id)))) === null) continue
+    if ((await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket)))) === null) continue
     act.log('sweep', w)
-    process.stderr.write(`peers sweep: ${w.id} ${w.call === 'hold' ? `held by ${w.holders.join(', ')}` : 'back to To Do (no session holds it)'}\n`)
+    process.stderr.write(`peers sweep: ${w.ticket} ${w.call === 'hold' ? `held by ${w.holders.join(', ')}` : 'back to To Do (no session holds it)'}\n`)
   }
   return notes
 }
@@ -306,6 +318,9 @@ function withIndexRetry(fn) {
 }
 
 const l = load()
+// One task per session: claimed in another repo, it still binds commits and close here.
+const away = l.ticket || !['commit', 'close'].includes(cmd) ? null : (myOthers().filter(x => x.o.ticket && x.o.claimed).sort((a, b) => b.o.claimed - a.o.claimed)[0] ?? null)
+const bound = l.ticket ?? away?.o.ticket
 if (['ready', 'claim', 'commit', 'close'].includes(cmd)) await drain()
 
 switch (cmd) {
@@ -463,11 +478,11 @@ switch (cmd) {
     if (!mine.length) die(only ? `none of ${only.join(', ')} is an uncommitted file of yours (peers status)` : 'nothing of yours to commit (edited in this same command? the ledger lands after it ends: run peers commit on its own)')
     // The subject names another task of the bound one's kind (`(WA-1010)` while WA-1012 is bound): the trailer follows the subject.
     // Only `KEY-12` ids: a GitHub `(#12)` in a subject is a PR number.
-    const pre = l.ticket?.match(/^([A-Za-z]+-)\d+$/)?.[1]
+    const pre = bound?.match(/^([A-Za-z]+-)\d+$/)?.[1]
     // Only ids in parentheses: prose like "regression from WA-932" names no target.
     const said = pre ? [...new Set((subject.match(/\([^)]*\)/g) ?? []).flatMap(x => x.match(new RegExp(`\\b${pre}\\d+\\b`, 'gi')) ?? []).map(t => t.toUpperCase()))] : []
-    const tickets = said.length && !said.includes(l.ticket?.toUpperCase()) ? said : l.ticket ? [l.ticket] : []
-    if (tickets[0] !== l.ticket && l.ticket) process.stderr.write(`peers commit: the subject names ${tickets.join(', ')}, not the bound ${l.ticket}: the trailer says ${tickets.join(', ')}\n`)
+    const tickets = said.length && !said.includes(bound?.toUpperCase()) ? said : bound ? [bound] : []
+    if (tickets[0] !== bound && bound) process.stderr.write(`peers commit: the subject names ${tickets.join(', ')}, not the bound ${bound}: the trailer says ${tickets.join(', ')}\n`)
     const body = [msg, '', ...tickets.map(t => `Ticket: ${t}`)].join('\n')
     // A private index built from HEAD: a peer's staged files never ride along, and the
     // update-ref below lands only if HEAD did not move under us.
@@ -626,7 +641,7 @@ switch (cmd) {
     const id = board.key ? board.key(argv[1]) : argv[1]
     let got
     // The holder marks the board shows: every live claim on id, mine counted as made now.
-    const mine = { ...l, session, ticket: id, updated: Date.now() }
+    const mine = { ...l, session, ticket: id, claimed: Date.now(), updated: Date.now() }
     const names = claimsOf([...allLedgers().filter(p => p.session !== session), mine], Date.now(), runningSync(homedir()), namesSync(homedir())).live.get(id) ?? []
     try {
       got = await board.claim(id, names)
@@ -634,17 +649,7 @@ switch (cmd) {
       die(`peers claim: no task ${id} (${e.message})`)
     }
     // One task per session: the claim moves off this session's ledgers in other repos (before 0.20.0 it stayed there).
-    for (const d of readdirSync(join(homedir(), '.claude', 'peers'), { withFileTypes: true })) {
-      const p = join(homedir(), '.claude', 'peers', d.name, `${session}.json`)
-      if (!d.isDirectory() || p === own) continue
-      const o = readParsed(p)
-      if (!o?.ticket) continue
-      delete o.ticket
-      delete o.title
-      delete o.claimed
-      writeFileSync(`${p}.${process.pid}.tmp`, JSON.stringify(o))
-      renameSync(`${p}.${process.pid}.tmp`, p)
-    }
+    for (const x of myOthers()) if (x.o.ticket) unbind(x)
     l.ticket = id
     l.claimed = Date.now()
     // The title travels in the ledger: the views show it without asking the board.
@@ -656,22 +661,26 @@ switch (cmd) {
     break
   }
   case 'close': {
-    if (!l.ticket) die('no ticket bound: peers claim <ticket> first')
+    if (!bound) die('no ticket bound: peers claim <ticket> first')
     const i = argv.indexOf('-r')
-    const reason = (i > 0 ? argv[i + 1] : 'done') + ticketShas(l.ticket)
+    const reason = (i > 0 ? argv[i + 1] : 'done') + ticketShas(bound)
     if (!argv.includes('--force')) {
-      const still = holders(l.ticket)
-      if (still.length) die(`peers close: ${still.map(nameOf).join(', ')} also works on ${l.ticket}. Close it there last, or --force.`)
-      const open = (await tryBoard('close', () => board.open(l.ticket))) ?? []
-      if (open.length) die(`peers close: ${l.ticket} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(l.ticket)} --force closes anyway.`)
+      const still = holders(bound)
+      if (still.length) die(`peers close: ${still.map(p => holderName(p, namesSync(homedir()))).join(', ')} also works on ${bound}. Close it there last, or --force.`)
+      const open = (await tryBoard('close', () => board.open(bound))) ?? []
+      if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
     }
-    if ((await tryBoard('close', () => board.close(l.ticket, reason))) === null && board.on()) die(`peers close: ${l.ticket} stays bound; fix the board error, then run it again.`)
-    act.log('close', { ticket: l.ticket, reason })
-    console.log(`closed ${l.ticket}: ${reason}`)
-    delete l.ticket
-    delete l.title
-    delete l.claimed
-    save(l)
+    if ((await tryBoard('close', () => board.close(bound, reason))) === null && board.on()) die(`peers close: ${bound} stays bound; fix the board error, then run it again.`)
+    act.log('close', { ticket: bound, reason })
+    console.log(`closed ${bound}: ${reason}`)
+    // After a close the session holds nothing: leftovers in its other ledgers (before 0.20.0) go too.
+    for (const x of myOthers()) if (x.o.ticket) unbind(x)
+    if (l.ticket) {
+      delete l.ticket
+      delete l.title
+      delete l.claimed
+      save(l)
+    }
     break
   }
   case 'log': {
@@ -690,7 +699,7 @@ switch (cmd) {
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
         : a.op === 'close' ? `close ${a.ticket}: ${a.reason}`
         : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`
-        : a.op === 'sweep' ? `sweep ${a.id} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : 'back to To Do'}`
+        : a.op === 'sweep' ? `sweep ${a.ticket} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : 'back to To Do'}`
         : a.op
       if (what) console.log(`${t}  ${what}`)
     }
