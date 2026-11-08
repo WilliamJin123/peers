@@ -20,7 +20,7 @@ export PATH="$T/bin:$PATH" HOME="$T/home" BACKLOG_CWD="$T/board" GIT_AUTHOR_NAME
 unset CLAUDE_CODE_SESSION_ID
 mkdir -p "$HOME/.claude/sessions" "$BACKLOG_CWD" "$T/r1" "$T/r2"
 (cd "$BACKLOG_CWD" && git init -q && backlog init smoke --defaults </dev/null >/dev/null 2>&1)
-for t in one two three four five six seven eight; do backlog task create $t >/dev/null; done
+for t in one two three four five six seven eight nine ten eleven; do backlog task create $t >/dev/null; done
 for r in r1 r2; do (cd "$T/$r" && git init -q && echo "the first line of the file" >f && git add f && git commit -qm init); done
 C="$HOME/.claude/peers-claims"
 mkdir -p "$HOME/.claude/peers" && echo '{"who":"m1"}' >"$HOME/.claude/peers/config.json"
@@ -51,7 +51,11 @@ A r2 commit -m 'edit f' >/dev/null 2>&1
 check 'a claim binds a commit in another repo' "$(git -C "$T/r2" log -1 --format='%(trailers:key=Ticket,valueonly)' | head -1)" 'TASK-1'
 check 'second holder is told and joins the marks' "$(B r2 claim TASK-1)" 'claimed TASK-1 (also held by cc-aaaa)'
 check 'second holder: marks' "$(who TASK-1)" 'In Progress|@peers:m1/cc-aaaa,@peers:m1/cc-bbbb'
-check 'close waits for the peer' "$(A r2 close -r x 2>&1 | grep -c 'cc-bbbb also works on TASK-1')" '1'
+# A close while a peer holds it: A's part is done, B keeps it; no refusal, so two holders never wait on each other.
+check 'close hands off to the peer' "$(A r2 close -r part 2>&1 | grep -c 'cc-bbbb still on it')" '1'
+check 'hand-off: only the peer is marked' "$(who TASK-1)" 'In Progress|@peers:m1/cc-bbbb'
+check 'hand-off: held says who is done' "$(B r1 held | grep -c 'TASK-1  done: cc-aaaa')" '1'
+A r2 claim TASK-1 >/dev/null
 
 # B's session ends; its claim is 3 h old. The sweep drops its mark and deletes the dead claim.
 rm "$HOME/.claude/sessions/2.json"
@@ -124,7 +128,6 @@ check 'both machines marked' "$(who TASK-7)" 'In Progress|@peers:m1/cc-ffff,@pee
 X r1 sweep >/dev/null 2>&1
 check "m2's sweep leaves m1's mark" "$(who TASK-7)" 'In Progress|@peers:m1/cc-ffff,@peers:m2/cc-xxxx'
 check 'm1 held shows m2' "$(F r1 held | grep -c 'TASK-7  m2/cc-xxxx  (another machine)')" '1'
-check 'close waits for the other machine' "$(F r1 close -r x 2>&1 | grep -c 'm2/cc-xxxx also works on TASK-7')" '1'
 # A lost board write: m1's mark is gone; m1's next sweep puts it back.
 backlog task edit TASK-7 -a '@peers:m2/cc-xxxx' >/dev/null
 F r1 sweep >/dev/null 2>&1
@@ -149,4 +152,29 @@ check "m1's dead claim goes once the task is back" "$(ls "$C" | grep -c ffff)" '
 backlog task edit TASK-8 -s 'In Progress' -a '@peers:cc-old1' >/dev/null
 A r1 sweep >/dev/null 2>&1
 check 'a 0.21 mark is own: freed' "$(who TASK-8)" 'To Do|'
+
+# Two holders both close: the first hands off, the second closes it Done.
+up gggg7777-0 7
+up hhhh8888-0 8
+as gggg7777-0 r1 claim TASK-9 >/dev/null
+as hhhh8888-0 r1 claim TASK-9 >/dev/null
+as gggg7777-0 r1 close -r g >/dev/null 2>&1
+check 'both close: the second closes it' "$(as hhhh8888-0 r1 close -r h 2>&1)" 'closed TASK-9: h'
+check 'both close: Done' "$(who TASK-9)" 'Done|'
+check 'both close: no record left' "$(ls "$C/closing" | grep -c TASK-9)" '0'
+# One hands off, the other ends without a close: the sweep closes it Done, never To Do.
+as gggg7777-0 r1 claim TASK-10 >/dev/null
+as hhhh8888-0 r1 claim TASK-10 >/dev/null
+as gggg7777-0 r1 close -r g >/dev/null 2>&1
+rm "$HOME/.claude/sessions/8.json"
+age hhhh8888-0 3
+A r1 sweep >/dev/null 2>&1
+check 'the last holder gone: Done' "$(who TASK-10)" 'Done|'
+check 'the last holder gone: record and claim gone' "$(ls "$C/closing" "$C" | grep -c -e TASK-10 -e hhhh)" '0'
+# Another machine's holder never blocks a close: a line, then Done.
+echo "{\"pid\":$$,\"sessionId\":\"xxxx9999-0\"}" >"$H2/.claude/sessions/9.json"
+X r1 claim TASK-11 >/dev/null
+as gggg7777-0 r1 claim TASK-11 >/dev/null
+check 'close past another machine' "$(as gggg7777-0 r1 close -r g 2>&1 | grep -c 'm2/cc-xxxx also had it')" '1'
+check 'close past another machine: Done' "$(who TASK-11)" 'Done|'
 exit $fails

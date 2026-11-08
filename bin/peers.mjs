@@ -237,16 +237,50 @@ const writeClaim = c => {
   renameSync(tmp, claimPath(c.session))
 }
 const dropClaim = id => rmSync(claimPath(id), { force: true })
+// A close while others hold the task: the session's part is done, the last holder out closes it.
+// `closing/<ticket>.json` = [{ session, name, reason, at }], written under the lock.
+const closingDir = join(claimDir, 'closing')
+const closingPath = t => join(closingDir, `${encodeURIComponent(t)}.json`)
+const readClosing = t => {
+  try {
+    return JSON.parse(readFileSync(closingPath(t), 'utf8'))
+  } catch {
+    return []
+  }
+}
+const allClosing = () => {
+  try {
+    return readdirSync(closingDir).filter(f => f.endsWith('.json')).map(f => decodeURIComponent(f.slice(0, -5)))
+  } catch {
+    return []
+  }
+}
+const addClosing = (t, d) => {
+  mkdirSync(closingDir, { recursive: true })
+  const tmp = `${closingPath(t)}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify([...readClosing(t).filter(x => x.session !== d.session), d]))
+  renameSync(tmp, closingPath(t))
+}
+const dropClosing = t => rmSync(closingPath(t), { force: true })
+// A session back on a task it was done with: off the done list.
+const unClosing = (t, s) => {
+  const rest = readClosing(t).filter(d => d.session !== s)
+  if (!rest.length) return dropClosing(t)
+  const tmp = `${closingPath(t)}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(rest))
+  renameSync(tmp, closingPath(t))
+}
 // The board lock: a claim (claim file, then board), a close (board, then claim file) and each sweep run one at a time
 // on this machine. Without it a sweep that read the claims before a claim landed sends the claimed task back to To Do.
-// mkdir is atomic. A holder that died (pid gone) or hung (2 min) loses it.
+// mkdir is atomic. A holder that died (pid gone) loses it; a live one only after 10 min (a reused pid). Board calls
+// time out at 30 s and close makes few under the lock, so a live holder never nears that.
 const LOCK = join(claimDir, '.lock')
 const sleepMs = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 const stale = () => {
   try {
     const pid = Number(readFileSync(join(LOCK, 'pid'), 'utf8'))
     if (pid) process.kill(pid, 0)
-    return Date.now() - statSync(LOCK).mtimeMs > 120_000
+    return Date.now() - statSync(LOCK).mtimeMs > 600_000
   } catch (e) {
     return e.code === 'ESRCH' || (e.code === 'ENOENT' && existsSync(LOCK) && Date.now() - statSync(LOCK).mtimeMs > 5000)
   }
@@ -273,9 +307,15 @@ const lock = waitMs => {
     }
   }
 }
+// Only a lock still ours: one taken from us as stale is the new holder's.
 const unlock = () => {
   if (!locked) return
   locked = false
+  try {
+    if (Number(readFileSync(join(LOCK, 'pid'), 'utf8')) !== process.pid) return
+  } catch {
+    return
+  }
   rmSync(LOCK, { recursive: true, force: true })
 }
 const withLock = async (waitMs, what, f) => {
@@ -314,9 +354,25 @@ const sweep = async () => {
       const held = (boardHeld = await tryBoard('sweep', () => board.held()))
       if (!held) return []
       const [now, running, names] = now3()
-      const { writes, notes, dead } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who), board.covers, who)
+      const { writes, notes, dead, settled } = plan(held, claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who), board.covers, who, new Set(allClosing()))
+      for (const t of settled) dropClosing(t)
       const failed = new Set()
       for (const w of writes) {
+        if (w.call === 'close') {
+          // Every holder is done: Done, with their reasons. Unchecked items keep it open for a person.
+          const open = (await tryBoard('sweep', () => board.open(w.ticket))) ?? []
+          if (open.length) {
+            notes.push(`${w.ticket}: every holder is done, ${open.length} item(s) unchecked: claim it, tick them, close it`)
+            continue
+          }
+          const done = readClosing(w.ticket)
+          const why = done.map(d => `${d.name}: ${d.reason}`).join('; ') || 'every holder done'
+          if ((await tryBoard('sweep', () => board.close(w.ticket, why))) === null) continue
+          dropClosing(w.ticket)
+          act.log('sweep', { ...w, reason: why })
+          process.stderr.write(`peers sweep: ${w.ticket} Done (the last holder is gone; every holder was done)\n`)
+          continue
+        }
         const r = await tryBoard('sweep', () => (w.call === 'hold' ? board.hold(w.ticket, w.holders) : board.release(w.ticket, w.queue)))
         // false: another machine holds it (seen now or at the sweep's read): the task and its dead claim stay.
         if (r === null || (w.call === 'release' && r === false)) failed.add(w.ticket)
@@ -335,7 +391,8 @@ const sweep = async () => {
 const heldNow = async () => {
   const [now, running, names] = now3()
   const away = board.held && board.on() ? (boardHeld ?? (await tryBoard('held', () => board.held())) ?? []) : []
-  return [...heldLines(claimsSync(homedir()), allLedgers(), now, running, names), ...awayLines(away, who)]
+  const done = allClosing().map(t => `${t}  done: ${readClosing(t).map(d => d.name).join(', ')}; Done when the last holder closes`)
+  return [...heldLines(claimsSync(homedir()), allLedgers(), now, running, names), ...done, ...awayLines(away, who)]
 }
 // Line sets of a file: mine, and every live peer's that has not committed it yet.
 // f's lines that differ from HEAD: a peer whose lines are all in HEAD (committed by any route) holds nothing.
@@ -751,6 +808,7 @@ switch (cmd) {
       }
       // The title travels in the claim: the views show it without asking the board.
       writeClaim({ ...c, title: got?.title ?? null, updated: Date.now() })
+      unClosing(id, session)
       act.log('claim', { ticket: id, title: got?.title ?? null })
       const others = [...all.filter(n => n !== `${who}/${c.name}`).map(n => n.slice(who.length + 1)), ...(got?.others ?? [])]
       console.log(`claimed ${id}${others.length ? ` (also held by ${others.join(', ')})` : ''}`)
@@ -761,20 +819,47 @@ switch (cmd) {
     if (!bound) die('no ticket bound: peers claim <ticket> first')
     const i = argv.indexOf('-r')
     const reason = (i > 0 ? argv[i + 1] : 'done') + ticketShas(bound)
+    const force = argv.includes('--force')
+    const nameOf_ = p => holderName(p, namesSync(homedir()))
+    // Board reads before the lock: a slow board never holds it. Only this machine's live sessions keep a task open:
+    // their liveness is known. Other machines and people (marks, comments, assignees) get a line, never a wait.
+    let away = [], checked = force
+    if (!force && !holders(bound).length) {
+      checked = true
+      away = (board.others && (await tryBoard('close', () => board.others(bound)))) || []
+      const open = (await tryBoard('close', () => board.open(bound))) ?? []
+      if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
+    }
     await withLock(60_000, 'close', async () => {
       // Read again under the lock: a parallel command of this session may have moved the claim.
-      if (readClaim(session)?.ticket !== bound) die(`peers close: the claim moved off ${bound} while this ran. Run it again.`)
-      if (!argv.includes('--force')) {
-        // This machine's other sessions, then other machines and people (the board: marks, comments, assignees).
-        const still = [...holders(bound).map(p => holderName(p, namesSync(homedir()))), ...((board.others && (await tryBoard('close', () => board.others(bound)))) || [])]
-        if (still.length) die(`peers close: ${still.join(', ')} also works on ${bound}. Close it there last, or --force.`)
+      const me = readClaim(session)
+      if (me?.ticket !== bound) die(`peers close: the claim moved off ${bound} while this ran. Run it again.`)
+      const still = force ? [] : holders(bound)
+      if (still.length) {
+        // My part is done; the last holder out closes it (its close, or the sweep once it is gone). Never a refusal:
+        // two holders that each wait on the other would both be stuck.
+        const who_ = still.map(nameOf_).join(', ')
+        addClosing(bound, { session, name: me.name ?? nameOf_(me), reason, at: Date.now() })
+        dropClaim(session)
+        const [now, running, names] = now3()
+        const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
+        if (board.hold) await tryBoard('close', () => board.hold(bound, live.get(bound) ?? []))
+        await tryBoard('close', () => board.note(bound, `${me.name ?? nameOf_(me)} done: ${reason}`))
+        act.log('close', { ticket: bound, reason, waits: who_ })
+        console.log(`done with ${bound}: ${reason}\n${who_} still on it; it goes Done when the last one closes.`)
+        return
+      }
+      // The other holders let go between the read and the lock: the item check ran only when none held it. Rare: here.
+      if (!checked) {
         const open = (await tryBoard('close', () => board.open(bound))) ?? []
         if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
       }
       if ((await tryBoard('close', () => board.close(bound, reason))) === null && board.on()) die(`peers close: ${bound} stays bound; fix the board error, then run it again.`)
       dropClaim(session)
+      dropClosing(bound)
       act.log('close', { ticket: bound, reason })
       console.log(`closed ${bound}: ${reason}`)
+      if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
     break
   }
@@ -792,9 +877,9 @@ switch (cmd) {
         : a.op === 'commit' ? `commit ${a.sha.slice(0, 7)} ${a.t ?? ''}${a.ticket ? ` (${a.ticket})` : ''}`
         : a.op === 'check' ? `check ${a.sha.slice(0, 7)} ${a.status === 0 ? 'passed' : `failed (${a.status})`}`
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
-        : a.op === 'close' ? `close ${a.ticket}: ${a.reason}`
+        : a.op === 'close' ? `close ${a.ticket}: ${a.reason}${a.waits ? ` (done; waits on ${a.waits})` : ''}`
         : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`
-        : a.op === 'sweep' ? `sweep ${a.ticket} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : a.queued === false ? 'let go, another machine holds it' : 'back to To Do'}`
+        : a.op === 'sweep' ? `sweep ${a.ticket} ${a.call === 'hold' ? `held by ${a.holders.join(', ')}` : a.call === 'close' ? 'Done (every holder done)' : a.queued === false ? 'let go, another machine holds it' : 'back to To Do'}`
         : a.op
       if (what) console.log(`${t}  ${what}`)
     }
