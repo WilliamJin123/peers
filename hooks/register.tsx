@@ -172,7 +172,7 @@ const refreshPeers = async ($: any) => {
 }
 
 // The /peers pane: the `peers view` server's file list and documents, in the terminal.
-// The server builds one state for every reader (the page, each session's pane); the pane polls it.
+// The server builds one state for every reader (the page, each session's pane); the pane reads it on each server event.
 const PANE = 'peers'
 const VIEW = 'http://127.0.0.1:6421'
 const SHARED = '#a594f9'
@@ -196,15 +196,21 @@ let ensured = false
 // The server says when anything changes (/events?sig=1): the band and the open pane read at once, not at the
 // next 2 s tick. The tick stays for a session with no server. A node child, as the mod has no stream reader.
 const LISTEN = `const r = require('http').get('${VIEW}/events?sig=1', { agent: false }, res => { res.setEncoding('utf8'); res.on('data', d => process.stdout.write(d)); res.on('end', () => process.exit(0)) }); r.on('error', () => process.exit(1))`
+// While the stream is up the 2 s ticks stand down to one read in 15 (30 s), a net for a missed event.
+let streaming = false
+const ticks = { pane: 0, band: 0 }
+const due = (k: keyof typeof ticks) => !streaming || ++ticks[k] % 15 === 0
 const listen = async ($: any) => {
   for (;;) {
     try {
       for await (const piece of $.process.spawn({ argv: ['node', '-e', LISTEN] }))
         if ('text' in piece && piece.stream === 'stdout') {
+          streaming = true
           void refreshPeers($).catch(() => {})
           if (tick) void poll($).catch(() => {})
         }
     } catch {}
+    streaming = false
     await $.clock.sleep(5000)
   }
 }
@@ -274,7 +280,7 @@ const openPane = async ($: any) => {
     ensured = true
     void $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, 'view', '--no-open'], { timeoutMs: 10000 }).catch(() => {})
   }
-  if (!tick) tick = $.clock.every(2000, () => void poll($).catch(() => {}))
+  if (!tick) tick = $.clock.every(2000, () => void (due('pane') && poll($).catch(() => {})))
   await poll($)
 }
 
@@ -327,8 +333,8 @@ export const register: Register = on => {
     } catch {}
     // Fill the band now: a resumed session shows its peers before the first tick or turn.
     void refreshPeers($).catch(() => {})
-    // Every 2 s, as the pane polls: the band and the pane change together.
-    $.clock.every(2000, () => refreshPeers($))
+    // Every 2 s with no stream, else every 30 s; the stream's events drive both band and pane.
+    $.clock.every(2000, () => (due('band') ? refreshPeers($) : undefined))
     void listen($)
     // immediate: it opens mid-turn, never queued behind the running turn.
     await $.command.register({ name: 'peers-view', description: "Open or close the live view of every session's edits", immediate: true })
