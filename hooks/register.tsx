@@ -4,7 +4,7 @@ import type { Peer, Row, Span, ViewBody, ViewFocus, ViewFold, ViewIndex, ViewOrd
 import { MODS, core, dirOf, holds, idOf, nameOf, peerLinesLost, quote, shortTicket } from '../lib/core.mjs'
 import { isAbs, slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
-import { delta } from '../lib/lines.mjs'
+import { delta, editDelta } from '../lib/lines.mjs'
 import { ADD, DEL, HELP, ago, boxCols, boxWindow, boxes, cast, fit, colorRule, docRow, fileHead, gapText, gaps, helpRows, hunkHead, listRows, onlyQuery, terms } from '../lib/rows.mjs'
 
 // One checkout, many sessions. Every session keeps its own ledger file:
@@ -569,7 +569,7 @@ export const register: Register = on => {
       const root: string | null = at?.root ?? null
       const rel: string | null = at?.rel ?? null
       let d: Delta | null = null
-      if (tool === 'Edit') d = delta(e.old_string ?? '', e.new_string ?? '')
+      if (tool === 'Edit') d = editDelta((await k($).readText(abs)) ?? '', e.old_string ?? '', e.new_string ?? '')
       if (tool === 'Write') d = delta((await k($).readText(abs)) ?? '', e.content ?? '')
 
       // A Write replaces the whole file: it must not drop a peer's uncommitted lines.

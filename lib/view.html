@@ -154,6 +154,7 @@ details[open] > summary .car { transform: rotate(90deg); }
 .l.del { background: color-mix(in srgb, var(--del) 6%, transparent); }
 .l.del code { color: var(--mute); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--c, var(--nobody)) 70%, transparent); }
 .l code { font: inherit; background: none; padding: 0; }
+.bar .btn.follow.on { border-color: var(--ink); color: var(--ink); background: color-mix(in srgb, var(--a0) 10%, var(--panel)); }
 .l mark { background: color-mix(in srgb, var(--c) 30%, transparent); color: inherit; border-radius: 2px; }
 .l del { color: var(--mute); }
 .more { padding: 4px 10px; color: var(--mute); cursor: pointer; font-size: var(--fs-meta); background: var(--code); }
@@ -255,12 +256,18 @@ import { Idiomorph } from '/vendor/idiomorph.mjs'
 import hljs from '/vendor/highlight.mjs'
 import Split from '/vendor/split-grid.mjs'
 import { gaps, gapText } from '/lib/rows.mjs'
+import { LIVE_CSS, createLive } from '/office/livefx.js'
+document.head.append(Object.assign(document.createElement('style'), { textContent: LIVE_CSS }))
+// live edits: hunk lines (t) and doc lines (k); unchanged lines carry no mark
+const live = createLive({ sigOf: x => (x.t ? (x.t === ' ' ? null : x.t + x.s) : x.k && x.k !== '=' ? x.k + x.s : null) })
+let MK = new Map() // line object → live mark, for the box being drawn
+const NO = { cls: '', style: '', flag: '', caret: '' }
 
 // Open state: sessions (depth 2) open, files and unchanged doc sections (depth 3) shut, unless the viewer
 // flipped that one block. The flips persist per viewer.
 const saved = (() => { try { return JSON.parse(localStorage.getItem('peers-view') ?? '{}') } catch { return {} } })()
 const S = { state: null, focus: null, mode: null, only: null, flip: new Set(saved.flip ?? []), more: new Set(), expand: new Map(), text: new Map(), full: false, live: false,
-  docs: new Map(), files: new Map(), fresh: new Map(), sigs: new Map(), lines: new Map(), freshLines: new Map(), changedOnly: !!saved.changedOnly }
+  docs: new Map(), files: new Map(), fresh: new Map(), sigs: new Map(), changedOnly: !!saved.changedOnly }
 const save = () => { try { localStorage.setItem('peers-view', JSON.stringify({ flip: [...S.flip].slice(-500), changedOnly: S.changedOnly, cols: saved.cols })) } catch {} }
 const isOpen = (id, depth) => (depth <= 2) !== S.flip.has(id)
 
@@ -339,7 +346,6 @@ function legend() {
 }
 
 function diffLines(f, h, cap, root) {
-  const fresh = S.freshLines.get(`${root}\0${f.rel}`)
   const lang = langOf(f.rel)
   let out = ''
   let o = h.old
@@ -351,7 +357,8 @@ function diffLines(f, h, cap, root) {
     const cls = x.t === '+' ? 'add' : x.t === '-' ? 'del' : ''
     const col = x.t === ' ' ? '' : `--c:${dim ? 'var(--nobody)' : c(x.a)}`
     const ln = x.t === '-' ? o++ : x.t === '+' ? n++ : (o++, n++)
-    out += `<div class="l ${cls} ${fresh?.has(x.t + x.s) ? 'fresh' : ''}" style="${col}" title="${x.t === ' ' ? '' : esc(nameOf(x.a))}"><span class="n">${ln}</span><span class="s">${x.t === ' ' ? '' : x.t}</span><code>${hl(x.s, lang) || ' '}</code></div>`
+    const m = MK.get(x) ?? NO
+    out += `<div class="l ${cls} ${m.cls}" style="${col};${m.style}" title="${x.t === ' ' ? '' : esc(nameOf(x.a))}"><span class="n">${ln}</span><span class="s">${x.t === ' ' ? '' : x.t}</span><code>${hl(x.s, lang) || ' '}${m.caret}</code>${m.flag}</div>`
   }
   return out
 }
@@ -383,6 +390,7 @@ function gapHtml(r, f, g) {
 
 // A file's hunks in one box, with a gap row wherever lines are not shown.
 function diffBox(r, f, hunks) {
+  MK = live.marks(`${r.root}\0${f.rel}`, hunks.flatMap(h => h.lines), { nameOf, colorOf: c })
   const at = new Map(gaps(hunks, f.size ?? 0).map(g => [g.before, g]))
   let out = ''
   hunks.forEach((h, i) => { if (at.has(i)) out += gapHtml(r, f, at.get(i)); out += hunkHtml(r, f, h) })
@@ -534,13 +542,15 @@ function docView(r, f, d) {
 // Code as a whole file: each changed line in its author's color, word changes marked.
 function srcView(f, d) {
   const lang = langOf(S.focus.rel)
+  const mk = live.marks(`doc:${S.focus.root}\0${S.focus.rel}`, d.lines, { nameOf, colorOf: c })
   let n = 0
   const rows = d.lines.map(x => {
     const ln = x.k === '-' ? '' : ++n
     const col = x.k === '=' ? '' : `--c:${c(x.a)}`
     const cls = x.k === '+' || x.k === '~' ? 'add' : x.k === '-' ? 'del' : ''
     const body = x.k === '~' ? esc(x.pre) + x.runs.map(r => (r.t === '+' ? `<mark>${esc(r.s)}</mark>` : r.t === '-' ? `<del>${esc(r.s)}</del>` : esc(r.s))).join('') : hl(x.s, lang)
-    return `<div class="l ${cls}" style="${col}"><span class="n">${ln}</span><span class="s">${x.k === '=' ? '' : x.k === '~' ? '±' : x.k}</span><code>${body || ' '}</code></div>`
+    const m = mk.get(x) ?? NO
+    return `<div class="l ${cls} ${m.cls}" style="${col};${m.style}"><span class="n">${ln}</span><span class="s">${x.k === '=' ? '' : x.k === '~' ? '±' : x.k}</span><code>${body || ' '}${m.caret}</code>${m.flag}</div>`
   })
   return `<div class="doc src"><div class="diff">${rows.join('')}</div></div>`
 }
@@ -557,6 +567,7 @@ function focusView() {
   const rel = S.focus.rel
   let out = `<div class="bar"><button class="btn" data-back><i class="bi bi-arrow-left"></i> Overview</button>
     <span class="seg"><button data-mode="doc" class="${mode === 'doc' ? 'on' : ''}">${isDoc(rel) ? 'Document' : 'Source'}</button><button data-mode="diff" class="${mode === 'diff' ? 'on' : ''}" ${f ? '' : 'disabled'}>Changes</button></span>
+    <button class="btn follow ${S.follow === false ? '' : 'on'}" data-follow aria-pressed="${S.follow !== false}" title="Scroll to each new edit as it comes in"><i class="bi bi-broadcast"></i> Follow edits</button>
     ${f ? kd(f.kind) : ''}<span class="crumb">${esc(r?.name ?? '')}/${esc(rel.split('/').slice(0, -1).join('/'))}${rel.includes('/') ? '/' : ''}<b>${esc(rel.split('/').pop())}</b></span>
     ${f ? `<span class="who-names">${names(f.authors)}</span>${num(f.hunks.reduce((n, h) => n + h.lines.filter(x => x.t === '+').length, 0), f.hunks.reduce((n, h) => n + h.lines.filter(x => x.t === '-').length, 0))}` : '<span class="faint">no uncommitted change</span>'}</div>`
   if (mode === 'diff' && f) return out + (f.hunks.length ? diffBox(r, f, f.hunks) : '<div class="empty">No text diff.</div>')
@@ -587,14 +598,34 @@ async function render() {
     const k = `${S.focus.root}\0${S.focus.rel}`
     const f = S.state.repos.find(x => x.root === S.focus.root)?.files.find(x => x.rel === S.focus.rel)
     const v = f ? f.mtime : 0
-    if (!S.docs.has(k) || S.docs.get(k).v !== v) S.docs.set(k, { ...((await loadDoc(S.focus.root, S.focus.rel)) ?? { missing: true }), v })
+    if (!S.docs.has(k) || S.docs.get(k).v !== v) {
+      const d = { ...((await loadDoc(S.focus.root, S.focus.rel)) ?? { missing: true }), v }
+      S.docs.set(k, d)
+      if (d.lines) live.update(`doc:${k}`, d.lines)
+    }
   }
   liveMark()
   legend()
   feed()
   morph(document.getElementById('main'), S.focus ? focusView() : overview())
   tree.paint()
+  follow()
   if (S.jump) { const el = [...document.querySelectorAll('.sec[data-line]')].filter(x => +x.dataset.line <= S.jump).pop(); S.jump = 0; el?.scrollIntoView({ block: 'start' }) }
+}
+
+// Follow: a new arrival in the open file scrolls into view, unless the viewer scrolled in the last 4 s.
+let followed = 0, scrolledAt = 0
+addEventListener('wheel', () => (scrolledAt = Date.now()), { passive: true })
+addEventListener('touchmove', () => (scrolledAt = Date.now()), { passive: true })
+function follow() {
+  if (!S.focus || S.follow === false) return
+  const k = `${S.focus.root}\0${S.focus.rel}`
+  const t = Math.max(live.latest(k), live.latest(`doc:${k}`))
+  if (!t || t <= followed) return
+  followed = t
+  if (Date.now() - scrolledAt < 4000) return
+  const rows = [...document.querySelectorAll('#main .ln-flag')].map(x => x.parentElement)
+  rows.at(-1)?.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
 }
 
 // Files whose diff changed since the last push pulse once, in place.
@@ -603,19 +634,14 @@ function mark(st) {
   for (const r of st.repos) for (const f of r.files) {
     const k = `${r.root}\0${f.rel}`
     const sig = `${f.mtime}:${f.hunks.length}:${f.hunks.reduce((n, h) => n + h.lines.length, 0)}`
-    // The changed lines new since the last push pulse too.
-    const ls = new Set(f.hunks.flatMap(h => h.lines.filter(x => x.t !== ' ').map(x => x.t + x.s)))
     if (S.sigs.has(k) && S.sigs.get(k) !== sig) {
       S.fresh.set(k, now)
-      const was = S.lines.get(k) ?? new Set()
-      S.freshLines.set(k, new Set([...ls].filter(x => !was.has(x))))
     }
     S.sigs.set(k, sig)
-    S.lines.set(k, ls)
+    live.update(k, f.hunks.flatMap(h => h.lines))
   }
-  for (const k of S.freshLines.keys()) if (!S.fresh.has(k)) S.freshLines.delete(k)
   for (const [k, t] of S.fresh) if (now - t > 2500) S.fresh.delete(k)
-  if (S.fresh.size) setTimeout(() => { for (const [k, t] of S.fresh) if (Date.now() - t > 2500) { S.fresh.delete(k); S.freshLines.delete(k) } render() }, 2600)
+  if (S.fresh.size) setTimeout(() => { for (const [k, t] of S.fresh) if (Date.now() - t > 2500) S.fresh.delete(k); render() }, 2600)
 }
 
 // The tree: every file git lists, per shown repo; a folder rolls up its files' authors and counts.
@@ -751,7 +777,7 @@ function open(root, rel, line = 0) {
 }
 
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-rel],[data-only],[data-back],[data-mode],[data-more],[data-gap],[data-hit],#findbtn,#keysbtn')
+  const t = e.target.closest('[data-rel],[data-only],[data-back],[data-mode],[data-follow],[data-more],[data-gap],[data-hit],#findbtn,#keysbtn')
   if (!t) return
   if (t.id === 'findbtn') return finder.show()
   if (t.dataset.hit) return finder.go(+t.dataset.hit)
@@ -761,6 +787,7 @@ document.addEventListener('click', e => {
   if (t.dataset.only) S.only = S.only === t.dataset.only ? null : t.dataset.only
   else if (t.dataset.back !== undefined) { S.focus = null; S.mode = null }
   else if (t.dataset.mode) S.mode = t.dataset.mode
+  else if (t.dataset.follow !== undefined) S.follow = S.follow === false
   else if (t.dataset.more) S.more.add(t.dataset.more)
   else if (t.dataset.rel) return open(t.dataset.root, t.dataset.rel)
   for (const d of S.docs.values()) d.html = null
