@@ -34,12 +34,7 @@ const live = !q.has('demo') && (await ping())
 const feed = live
   ? (await import('./live.js')).createLive({ only: q.getAll('only') })
   : (await import('./demo.js')).createDemo(q.get('demo') || 'story')
-// ?look=<name>: a variant from looks.js (batch 6); none = the shipped look
-const look = q.get('look')
-const T = look ? (await import('./looks.js')).lookOf(theme, look) : theme
-if (T !== theme) document.documentElement.style.cssText += T.css
-if (T.sheet) document.head.append(Object.assign(document.createElement('style'), { textContent: T.sheet }))
-office(feed, T)
+office(feed, theme)
 </script>
 </body>
 </html>
