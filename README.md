@@ -32,13 +32,13 @@ An Edit that removes a peer's uncommitted lines goes through with a warning. A B
 At the prompt of a Claude Code session:
 
 ```
-/plugin install peers --marketplace wrenautomation/peers
+/plugin install peers --marketplace WilliamJin123/peers
 ```
 
 From a shell:
 
 ```
-claude plugin install peers --marketplace wrenautomation/peers
+claude plugin install peers --marketplace WilliamJin123/peers
 ```
 
 Answer `y` to add the marketplace, then pick the user scope. The next session links `peers` into `~/.local/bin`. Needs Claude Code 2.1.287 or newer.
