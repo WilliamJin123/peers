@@ -1,6 +1,7 @@
 // Shared office scene (batch 4): rooms per repo, desks, the task board, strings card → desk. A theme sets the look.
 // theme: see themes.js. Same sim, same layout in every style; only materials, light, post and pace change.
 import { createSim, REPOS } from './sim.js'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import { createHud } from './hud.js'
 import { createDock } from './dock.js'
 import { THREE, stage, box, goTo, flights, arc, ease, textPlane, navigate, easeOutBack, stepped, figure, stride, turnTo, act, emote, codeScreen, paperPlane, confetti } from './kit.js'
@@ -16,11 +17,13 @@ export async function office(T) {
   document.head.append(st)
 
   const C = T.c, ALERT = T.alert
+  // T.round: soft toy edges on every box
+  const bx = T.round ? (w, h, d, m) => { const g = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 2, Math.min(T.round, Math.min(w, h, d) * 0.45)), m); g.castShadow = g.receiveShadow = true; return g } : box
   const sim = createSim()
   const hud = createHud(sim, { title: `peers · ${T.title}` })
   const dock = createDock(sim, { tasks: true, tab: 'tasks', onPick: (s) => pick(s, true) })
   addEventListener('resize', () => location.reload())
-  const span = dock.side ? 33 : 29
+  const span = T.span ? T.span[dock.side ? 0 : 1] : dock.side ? 33 : 29
   const S = stage({ bg: T.bg, span, inset: dock.inset, fov: T.fov ?? 0, shadows: T.shadows !== false })
   const { scene, camera, renderer } = S
   if (T.pixel) renderer.setPixelRatio(1)
@@ -35,25 +38,40 @@ export async function office(T) {
   const fly = flights(scene, onStep)
   const M = (color, extra) => T.mat(color, extra)
   T.lights(scene, S)
+  if (T.bgGrad) {
+    // studio backdrop: vertical gradient behind the scene
+    const c = document.createElement('canvas'); c.width = 4; c.height = 256
+    const g = c.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 256); T.bgGrad.forEach((col, i) => gr.addColorStop(i / (T.bgGrad.length - 1), col)); g.fillStyle = gr; g.fillRect(0, 0, 4, 256)
+    const tx = new THREE.CanvasTexture(c); tx.colorSpace = THREE.SRGBColorSpace; scene.background = tx
+  }
+  if (T.plinth) {
+    // diorama base under the floor, a plaque on the front faces
+    const pl = bx(29.2, 1.8, 29.2, M(T.plinth)); pl.position.y = -1.4; scene.add(pl)
+    const trim = bx(28.4, 0.12, 28.4, M(C.trim ?? C.desk)); trim.position.y = -0.52; scene.add(trim)
+    for (const [x, z, ry] of [[7, 14.62, 0], [14.62, 7, Math.PI / 2]]) {
+      const plate = bx(4.4, 0.8, 0.06, M(T.plaque ?? '#c9a24a', { metalness: 0.6, roughness: 0.35 })); plate.position.set(x, -1.4, z); plate.rotation.y = ry; scene.add(plate)
+      const tx = textPlane('peers · office', { w: 4, size: 58, color: '#4a3a18', weight: 700 }); tx.rotation.set(0, ry, 0); tx.position.set(x + (ry ? 0.04 : -0.1), -1.42, z + (ry ? 0.1 : 0.04)); scene.add(tx)
+    }
+  }
 
   // floor, rooms, walls
-  const floor = box(27, 0.5, 27, M(C.floor)); floor.position.y = -0.25; scene.add(floor)
+  const floor = bx(27, 0.5, 27, M(C.floor)); floor.position.y = -0.25; scene.add(floor)
   const ROOM = { wren: [-6.6, -6.6], peers: [6.6, -6.6], vireo: [-6.6, 6.6], engine: [6.6, 6.6] }
   const label = (s, o = {}) => textPlane(s, { color: C.label, font: hand, weight: T.hand ? 700 : 600, ...o })
   for (const r of REPOS) {
     const [x, z] = ROOM[r.id]
-    const f = box(11.4, 0.06, 11.4, M(C.tint[r.id])); f.position.set(x, 0.03, z); scene.add(f)
+    const f = bx(11.4, 0.06, 11.4, M(C.tint[r.id])); f.position.set(x, 0.03, z); scene.add(f)
     const l = label(r.id); l.position.set(x - 3.4, 0.08, z + 4.9); scene.add(l)
   }
   const wallM = M(C.wall), partM = M(C.part ?? C.wall)
-  const wall = (w, d, x, z, h = 2.2, m = wallM) => { const b = box(w, h, d, m); b.position.set(x, h / 2, z); scene.add(b); return b }
+  const wall = (w, d, x, z, h = 2.2, m = wallM) => { const b = bx(w, h, d, m); b.position.set(x, h / 2, z); scene.add(b); return b }
   wall(27, 0.4, 0, -13.3); wall(0.4, 27, -13.3, 0)
   for (const s of [-1, 1]) { wall(0.3, 6.5, 0, s * 9.75, 0.9, partM); wall(6.5, 0.3, s * 9.75, 0, 0.9, partM) }
   if (T.windows) for (const [x, z, ry] of [[-3, -13.08, 0], [3.4, -13.08, 0], [9.6, -13.08, 0], [-13.08, -3, Math.PI / 2], [-13.08, 3.4, Math.PI / 2], [-13.08, 9.6, Math.PI / 2]]) {
     const w = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 1.15), new THREE.MeshBasicMaterial({ map: windowTex(T.windows, x + z), toneMapped: false }))
     w.material.color.setScalar(T.windows === 'night' ? 1.6 : 1)
     w.position.set(x, 1.35, z); w.rotation.y = ry; scene.add(w)
-    const sill = box(4.4, 0.08, 0.18, M(C.trim ?? C.desk)); sill.position.set(x + (ry ? 0.05 : 0), 0.74, z + (ry ? 0 : 0.05)); sill.rotation.y = ry; scene.add(sill)
+    const sill = bx(4.4, 0.08, 0.18, M(C.trim ?? C.desk)); sill.position.set(x + (ry ? 0.05 : 0), 0.74, z + (ry ? 0 : 0.05)); sill.rotation.y = ry; scene.add(sill)
   }
 
   // plaza: main dropbox, sofas, plants
@@ -67,8 +85,8 @@ export async function office(T) {
   const SOFA = [[-2.2, 2.2], [2.2, -2.2]]
   const sofas = SOFA.map(([x, z]) => {
     const s = new THREE.Group(), m = M(C.sofa)
-    s.add(box(2.4, 0.5, 1, m)); const back = box(2.4, 0.6, 0.3, m); back.position.set(0, 0.45, -0.38); s.add(back)
-    for (const e of [-1, 1]) { const arm = box(0.28, 0.4, 1, m); arm.position.set(e * 1.2, 0.3, 0); s.add(arm) }
+    s.add(bx(2.4, 0.5, 1, m)); const back = bx(2.4, 0.6, 0.3, m); back.position.set(0, 0.45, -0.38); s.add(back)
+    for (const e of [-1, 1]) { const arm = bx(0.28, 0.4, 1, m); arm.position.set(e * 1.2, 0.3, 0); s.add(arm) }
     s.position.set(x, 0.25, z); s.lookAt(0, 0.25, 0); scene.add(s); return s
   })
   const plants = [[12, -12], [-12, 12], [12, 12], [2.6, 2.6], [-2.6, -2.6]].map(([x, z], i) => {
@@ -82,6 +100,28 @@ export async function office(T) {
     p.position.set(x, 0, z); p.userData = { leaves, ph: i * 1.7 }; scene.add(p); return p
   })
 
+  // props: wall clock on real time, bookshelves
+  let clock = null
+  if (T.props) {
+    clock = new THREE.Group(); clock.position.set(0.2, 1.55, -13.06)
+    const face = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.08, 32), M(C.paper)); face.rotation.x = Math.PI / 2; clock.add(face)
+    const rimG = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.05, 10, 32), M(C.bezel)); clock.add(rimG)
+    const hand = (l, w) => { const g = new THREE.Group(); const m = bx(w, l, 0.02, M(C.bezel)); m.position.y = l / 2; g.add(m); g.position.z = 0.06; clock.add(g); return g }
+    clock.userData = { h: hand(0.22, 0.05), m: hand(0.33, 0.035), s: hand(0.36, 0.015) }
+    clock.userData.s.children[0].material = M(ALERT)
+    scene.add(clock)
+    const books = [C.tint.wren, C.tint.peers, C.tint.vireo, C.tint.engine, C.sofa, C.main, C.lid, C.pot]
+    for (const [x, z, ry] of [[-12.85, 0.2, Math.PI / 2], [6.5, -12.85, 0]]) {
+      const sh = new THREE.Group(); sh.position.set(x, 0, z); sh.rotation.y = ry
+      const frameS = bx(1.8, 1.9, 0.5, M(C.desk)); frameS.position.y = 0.95; sh.add(frameS)
+      for (let r = 0; r < 3; r++) for (let k = 0; k < 7; k++) {
+        const h = 0.36 + ((k * 7 + r * 3) % 5) * 0.04
+        const b = bx(0.18, h, 0.36, M(books[(k + r * 3) % books.length])); b.position.set(-0.66 + k * 0.22, 0.2 + r * 0.6 + h / 2, 0.12); b.rotation.z = k === 6 ? -0.18 : 0; sh.add(b)
+      }
+      scene.add(sh)
+    }
+  }
+
   // desks + figures
   const SLOTS = { wren: [[-2.6, 0], [2.6, 0]], peers: [[0, 0]], vireo: [[0, 0]], engine: [[-2.6, 0], [2.6, 0]] }
   const used = {}, W = {}
@@ -92,12 +132,12 @@ export async function office(T) {
     const [rx, rz] = ROOM[x.repo], [ox, oz] = SLOTS[x.repo][i]
     const dx = rx + ox, dz = rz + oz
     const desk = new THREE.Group()
-    const top = box(2.6, 0.12, 1.2, deskM); top.position.y = 1.0; desk.add(top)
-    for (const [lx, lz] of [[-1.2, -0.5], [1.2, -0.5], [-1.2, 0.5], [1.2, 0.5]]) { const l = box(0.1, 1, 0.1, legM); l.position.set(lx, 0.5, lz); desk.add(l) }
+    const top = bx(2.6, 0.12, 1.2, deskM); top.position.y = 1.0; desk.add(top)
+    for (const [lx, lz] of [[-1.2, -0.5], [1.2, -0.5], [-1.2, 0.5], [1.2, 0.5]]) { const l = bx(0.1, 1, 0.1, legM); l.position.set(lx, 0.5, lz); desk.add(l) }
     // monitor: bezel + a code face on each side (readable from the chair and from the camera)
     const mon = new THREE.Group(); mon.position.set(-0.55, 1.52, -0.3)
-    const bez = box(1.2, 0.78, 0.06, bezelM); mon.add(bez)
-    const stand = box(0.08, 0.4, 0.08, bezelM); stand.position.y = -0.5; mon.add(stand)
+    const bez = bx(1.2, 0.78, 0.06, bezelM); mon.add(bez)
+    const stand = bx(0.08, 0.4, 0.08, bezelM); stand.position.y = -0.5; mon.add(stand)
     const code = codeScreen(x.id + x.repo, { ...T.screen, accent: x.color, font: T.mono })
     for (const s of [-1, 1]) { const f = new THREE.Mesh(new THREE.PlaneGeometry(1.08, 0.66), code.mat); f.position.z = s * 0.035; if (s < 0) f.rotation.y = Math.PI; mon.add(f) }
     desk.add(mon)
@@ -126,8 +166,8 @@ export async function office(T) {
     let s = w.stacks.get(file)
     if (!s) {
       s = new THREE.Group()
-      const p = box(0.36, 1, 0.46, paperM); p.position.y = 0.5; s.add(p)
-      const band = box(0.38, 0.05, 0.48, M(w.x.color)); s.add(band)
+      const p = bx(0.36, 1, 0.46, paperM); p.position.y = 0.5; s.add(p)
+      const band = bx(0.38, 0.05, 0.48, M(w.x.color)); s.add(band)
       s.userData = { p, band, bump: 0.6, grow: 0 }
       w.desk.add(s); w.stacks.set(file, s)
       let i = 0
@@ -145,18 +185,18 @@ export async function office(T) {
   const COLS = ['In Progress', 'Blocked', 'To Do', 'Done']
   const BW = 13, BH = 4.6
   const board = new THREE.Group(); board.position.set(-11.6, 0.9, -11.6); board.lookAt(30, 28.9, 30); scene.add(board)
-  const cork = box(BW, BH, 0.14, M(C.cork)); cork.position.y = BH / 2; board.add(cork)
-  const frame = box(BW + 0.3, BH + 0.3, 0.1, M(C.frame)); frame.position.set(0, BH / 2, -0.08); board.add(frame)
+  const cork = bx(BW, BH, 0.14, M(C.cork)); cork.position.y = BH / 2; board.add(cork)
+  const frame = bx(BW + 0.3, BH + 0.3, 0.1, M(C.frame)); frame.position.set(0, BH / 2, -0.08); board.add(frame)
   const colX = (i) => -BW / 2 + BW / 8 + i * BW / 4
   COLS.forEach((c, i) => {
     const h = textPlane(c, { w: 3, size: 64, color: c === 'Blocked' ? ALERT : C.head, font: hand, weight: 700 }); h.rotation.x = 0; h.position.set(colX(i) - 0.35, BH - 0.32, 0.09); board.add(h)
-    if (i) { const d = box(0.04, BH - 0.3, 0.02, M(C.frame)); d.position.set(colX(i) - BW / 8, BH / 2 - 0.1, 0.08); board.add(d) }
+    if (i) { const d = bx(0.04, BH - 0.3, 0.02, M(C.frame)); d.position.set(colX(i) - BW / 8, BH / 2 - 0.1, 0.08); board.add(d) }
   })
   const CARD = {}
   for (const t of sim.tasks) {
     const g = new THREE.Group()
     const mat = M(C.card[t.status], { emissive: '#000000', emissiveIntensity: 0 })
-    const c = box(1.6, 0.78, 0.05, mat); g.add(c)
+    const c = bx(1.6, 0.78, 0.05, mat); g.add(c)
     const a = textPlane(t.id, { w: 1.5, size: 70, color: C.ink, font, weight: 700 }); a.rotation.x = 0; a.position.set(0, 0.17, 0.035); g.add(a)
     const b = textPlane(t.title, { w: 1.5, size: 50, color: C.sub, font }); b.rotation.x = 0; b.position.set(0, -0.15, 0.035); g.add(b)
     const pin = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), M(t.status === 'Blocked' ? ALERT : C.pin)); pin.position.set(0, 0.33, 0.06); g.add(pin)
@@ -222,7 +262,7 @@ export async function office(T) {
 
   const RUG = {}
   for (const w of Object.values(W)) {
-    const r = box(3.6, 0.03, 3.2, M(w.x.color, { transparent: true, opacity: 0.22 })); r.position.set(w.desk.position.x, 0.075, w.desk.position.z - 0.35); r.castShadow = false; scene.add(r); RUG[w.x.id] = r
+    const r = bx(3.6, 0.03, 3.2, M(w.x.color, { transparent: true, opacity: 0.22 })); r.position.set(w.desk.position.x, 0.075, w.desk.position.z - 0.35); r.castShadow = false; scene.add(r); RUG[w.x.id] = r
     w.desk.userData.pick = { session: w.x.id }; w.b.userData.pick = { session: w.x.id }
   }
   const held = (id) => !!sim.byId[id].taskId && sim.taskById[sim.byId[id].taskId].holders?.includes(id)
@@ -266,6 +306,17 @@ export async function office(T) {
     camera.position.copy(h.target).add(r.multiplyScalar(T.fov ? 1.35 : 1)); camera.zoom = h.zoom * (T.fov ? 1 : 0.72); camera.updateProjectionMatrix()
     nav.flyTo(h.target, h.zoom, h.pos, 2.2)
   }
+  if (T.turntable) {
+    // turns slowly once nobody touches it for 5 s
+    let idle = performance.now()
+    renderer.domElement.addEventListener('pointerdown', () => (idle = performance.now()))
+    const up = new THREE.Vector3(0, 1, 0), off = new THREE.Vector3()
+    S.onFrame((dt) => {
+      if (performance.now() - idle < 5000 || picked) return
+      off.copy(camera.position).sub(S.controls.target).applyAxisAngle(up, dt * T.turntable * 0.1)
+      camera.position.copy(S.controls.target).add(off)
+    })
+  }
   const q = Object.fromEntries(new URLSearchParams(location.hash.slice(1)))
   if (Object.keys(q).length) setTimeout(() => pick(q), 2400)
 
@@ -299,6 +350,13 @@ export async function office(T) {
         tr.geometry.attributes.position.needsUpdate = true
       }, () => { fly(tr, 0.5, (k, l) => (l.material.opacity = 0.6 * (1 - k))); to.b.userData.land = 0.6 })
     }
+    if (e.type === 'clash' && T.pop) {
+      const o = W[e.other], mid = head(w).lerp(head(o), 0.5).setY(2.2)
+      for (let i = 0; i < 7; i++) {
+        const st = emote('✦', { color: i % 2 ? ALERT : '#ffd23f', bg: 'rgba(0,0,0,0)', h: 0.7, font }), a = (i / 7) * Math.PI * 2
+        fly(st, 0.7, (k, ob) => { ob.position.copy(mid).addScaledVector(camRight, Math.cos(a) * k * 1.6).add(tmp.set(0, Math.sin(a) * k * 1.3, 0)); const sc = 0.7 * easeOutBack(Math.min(1, k * 3)) * (1 - k * k); ob.scale.set(sc, sc, 1) })
+      }
+    }
     if (e.type === 'clash') {
       const o = W[e.other]
       w.shake = o.shake = 1.4
@@ -314,7 +372,7 @@ export async function office(T) {
     }
     if (e.type === 'claim' || e.type === 'close') { layoutCards(); setTimeout(syncStrings, 700) }
     if (e.type === 'commit' && e.task) {
-      const g = CARD[e.task], tag = box(0.3, 0.12, 0.02, M(w.x.color)); const n = sim.taskById[e.task].commits.length
+      const g = CARD[e.task], tag = bx(0.3, 0.12, 0.02, M(w.x.color)); const n = sim.taskById[e.task].commits.length
       tag.position.set(-0.65 + ((n - 1) % 5) * 0.32, -0.42, 0.04); tag.scale.setScalar(0.001); g.add(tag); g.userData.lift = Math.max(g.userData.lift, 0.6)
       fly(new THREE.Object3D(), 0.4, (k) => tag.scale.setScalar(Math.max(0.001, easeOutBack(k))))
     }
@@ -325,7 +383,7 @@ export async function office(T) {
       clearStacks(w)
       setTimeout(() => {
         w.b.userData.land = -0.9
-        const parcel = box(0.6, 0.45, 0.6, M(w.x.color)); const ribbon = box(0.62, 0.47, 0.1, M(C.paper)); parcel.add(ribbon)
+        const parcel = bx(0.6, 0.45, 0.6, M(w.x.color)); const ribbon = bx(0.62, 0.47, 0.1, M(C.paper)); parcel.add(ribbon)
         parcel.position.set(0, 2.05, 0.1); parcel.scale.setScalar(0.001); w.b.add(parcel)
         fly(new THREE.Object3D(), 0.35, (k) => parcel.scale.setScalar(Math.max(0.001, easeOutBack(k, 2.4))))
         goTo(w.b, 0.9 * Math.sign(w.home.x), 0.9 * Math.sign(w.home.z), () => {
@@ -362,10 +420,18 @@ export async function office(T) {
     lid.scale.set(sp, sp, 1 / sp); base.scale.set(1 / Math.sqrt(sp), sp ** 0.5, 1 / Math.sqrt(sp))
     lid.material.emissiveIntensity *= Math.exp(-dt * 2.5)
     for (const p of plants) p.userData.leaves.rotation.z = Math.sin(t * 0.9 + p.userData.ph) * 0.05
+    if (clock) { const d = new Date(), sec = d.getSeconds() + d.getMilliseconds() / 1000, mn = d.getMinutes() + sec / 60; clock.userData.s.rotation.z = -sec / 60 * Math.PI * 2; clock.userData.m.rotation.z = -mn / 60 * Math.PI * 2; clock.userData.h.rotation.z = -((d.getHours() % 12) + mn / 60) / 12 * Math.PI * 2 }
     camRight.setFromMatrixColumn(camera.matrixWorld, 0)
     for (const w of Object.values(W)) {
       const { x, b } = w, u = b.userData
+      const ph0 = u.phase
       const moving = stride(b, dt)
+      if (T.puffs && moving && Math.floor(u.phase) !== Math.floor(ph0)) {
+        // dust puff under the stepping foot
+        const pf = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: T.puffs, transparent: true, opacity: 0.8 }))
+        pf.position.copy(b.position).add(tmp.set((Math.floor(u.phase) % 2 ? 0.2 : -0.2), 0.12, 0))
+        fly(pf, 0.55, (k, ob) => { ob.scale.setScalar(0.6 + k * 1.6); ob.position.y = 0.12 + k * 0.25; ob.material.opacity = 0.8 * (1 - k) })
+      }
       const at = !moving && b.position.distanceTo(w.home) < 0.1
       let mode = moving ? 'walk' : 'stand'
       if (!moving) {

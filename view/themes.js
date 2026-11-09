@@ -9,6 +9,20 @@ import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelated
 import { HorizontalTiltShiftShader } from 'three/addons/shaders/HorizontalTiltShiftShader.js'
 import { VerticalTiltShiftShader } from 'three/addons/shaders/VerticalTiltShiftShader.js'
 import { OutlineEffect } from 'three/addons/effects/OutlineEffect.js'
+import { Pass } from 'three/addons/postprocessing/Pass.js'
+
+// ink outlines as a composer pass, so tilt-shift can follow it
+class InkPass extends Pass {
+  constructor(fx, scene, camera) { super(); Object.assign(this, { fx, scene, camera }); this.needsSwap = false }
+  render(renderer, writeBuffer, readBuffer) { renderer.setRenderTarget(this.renderToScreen ? null : readBuffer); renderer.clear(); this.fx.render(this.scene, this.camera) }
+}
+const tilt = (amt = 1.5, r = 0.52) => {
+  const h = new ShaderPass(HorizontalTiltShiftShader), v = new ShaderPass(VerticalTiltShiftShader)
+  const size = (w, H) => { h.uniforms.h.value = amt / w; v.uniforms.v.value = amt / H; h.uniforms.r.value = v.uniforms.r.value = r }
+  size(innerWidth, innerHeight)
+  return { passes: [h, v], size }
+}
+const rampOf = (vals) => { const t = new THREE.DataTexture(new Uint8Array(vals), vals.length, 1, THREE.RedFormat); t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t }
 
 // composer: passes, then OutputPass (tone map + sRGB)
 function chain(S, passes, onSize) {
@@ -158,4 +172,65 @@ export const mini = {
     return chain(S, [new RenderPass(S.scene, S.camera), h, v], size)
   },
   screen: { bg: '#1e1e26', fg: '#d8f4ff' }, confetti: ['#ffd166', '#ef476f', '#2ec4b6', '#8fc7ff', '#ffffff'],
+}
+
+// ---- batch 5: toon (8) and mini (8) pushed further, and crossed ----
+
+// toon+: bolder ink, two-band cel, dust puffs, stars on a clash, toy props
+const ramp2 = rampOf([110, 255])
+export const toonPlus = {
+  ...toon, title: 'toon plus', puffs: '#fff6e3', pop: true, props: true,
+  mat: (c, x = {}) => new THREE.MeshToonMaterial({ color: c, gradientMap: ramp2, ...x }),
+  lights: (scene) => lights(scene, { sky: '#ffffff', ground: '#ffd9a8', hemi: 1.0, key: 2.4, pos: [14, 20, 2], radius: 1 }),
+  post: (S) => {
+    const fx = new OutlineEffect(S.renderer, { defaultThickness: 0.007, defaultColor: [0.16, 0.13, 0.22], defaultAlpha: 1 })
+    return { render: () => fx.render(S.scene, S.camera), setSize: (w, h) => fx.setSize(w, h) }
+  },
+}
+
+// mini+: rounded toy pieces, props, a live wall clock, puffs; same lens and tilt
+export const miniPlus = {
+  ...mini, title: 'mini plus', round: 0.09, props: true, puffs: '#ffffff', pop: true,
+  mat: (c, x = {}) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.32, clearcoat: 1, clearcoatRoughness: 0.08, sheen: 0.3, ...x }),
+}
+
+// toon × mini: cel bands and ink through the long lens, tilt-shift after the ink
+export const toonMini = {
+  ...toon, title: 'toon mini', fov: 20, round: 0.07, puffs: '#fff6e3', pop: true, props: true,
+  post: (S) => {
+    const fx = new OutlineEffect(S.renderer, { defaultThickness: 0.0035, defaultColor: [0.18, 0.16, 0.24], defaultAlpha: 1 })
+    const t = tilt(1.4)
+    return chain(S, [new InkPass(fx, S.scene, S.camera), ...t.passes], t.size)
+  },
+}
+
+// diorama: mini's toys on a wooden plinth, studio backdrop, turns slowly when left alone
+export const diorama = {
+  ...mini, title: 'diorama', round: 0.09, props: true, puffs: '#ffffff', pop: true, turntable: 0.6, span: [36, 32],
+  plinth: '#8a5a3a', plaque: '#d4a94a', bgGrad: ['#f4efe6', '#d9e6ea', '#b8ccd4'], bg: '#d9e6ea', windows: 'day',
+  c: { ...mini.c, trim: '#6a4228' },
+  post: (S) => { const t = tilt(1.2, 0.5); return chain(S, [new RenderPass(S.scene, S.camera), ...t.passes], t.size) },
+}
+
+// toon × paper: cel bands on grain, cut-out people, brown ink, stop-motion at 12 fps
+export const toonPaper = {
+  ...toon, title: 'toon paper', figure: 'cutout', fps: 12, boil: 0.04, pop: true, windows: null,
+  gfont: 'family=Caveat:wght@500;700&family=Kalam:wght@400;700', font: 'Kalam', hand: 'Caveat',
+  bg: '#f6ecd6', c: { ...toon.c, floor: '#f2dfb8', wall: '#f0a878', part: '#f6c494' },
+  css: hudVars('#fffcf3eb', '#3a3026', '#7a6a54', '#3a3026', '"Kalam",ui-sans-serif,sans-serif', '--dock-chip:#ffe39a80;'),
+  mat: (c, x = {}) => new THREE.MeshToonMaterial({ color: c, gradientMap: ramp, map: grain, ...x }),
+  post: (S) => {
+    const fx = new OutlineEffect(S.renderer, { defaultThickness: 0.005, defaultColor: [0.29, 0.21, 0.14], defaultAlpha: 0.9 })
+    return { render: () => fx.render(S.scene, S.camera), setSize: (w, h) => fx.setSize(w, h) }
+  },
+}
+
+// toon flat: no ink, two flat tones, pastel sky backdrop, long low sun
+export const toonFlat = {
+  ...toon, title: 'toon flat', puffs: '#ffffff', pop: true, props: true, round: 0.05,
+  bgGrad: ['#ffe2c6', '#ffd0d6', '#d6d0ff'], bg: '#ffd0d6',
+  c: { ...toon.c, floor: '#fbe7d0', wall: '#f7a8a0', part: '#fbc4b4', tint: { wren: '#ffd3a6', peers: '#bfe6c4', vireo: '#ffc0d0', engine: '#c4d4ff' } },
+  mat: (c, x = {}) => new THREE.MeshToonMaterial({ color: c, gradientMap: ramp2, ...x }),
+  lights: (scene) => lights(scene, { sky: '#fff4ec', ground: '#d6c0ff', hemi: 1.25, key: 1.9, color: '#ffe0c0', pos: [18, 11, -4], radius: 1 }),
+  post: null,
 }
