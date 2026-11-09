@@ -17,7 +17,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [match...] | tui [match...]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
