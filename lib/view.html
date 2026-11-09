@@ -261,7 +261,7 @@ document.head.append(Object.assign(document.createElement('style'), { textConten
 // live edits: hunk lines (t) and doc lines (k); unchanged lines carry no mark
 const live = createLive({ sigOf: x => (x.t ? (x.t === ' ' ? null : x.t + x.s) : x.k && x.k !== '=' ? x.k + x.s : null) })
 let MK = new Map() // line object → live mark, for the box being drawn
-const NO = { cls: '', style: '', flag: '', caret: '' }
+const NO = { cls: '', style: '', flag: '', caret: '', type: (h) => h }
 
 // Open state: sessions (depth 2) open, files and unchanged doc sections (depth 3) shut, unless the viewer
 // flipped that one block. The flips persist per viewer.
@@ -358,7 +358,7 @@ function diffLines(f, h, cap, root) {
     const col = x.t === ' ' ? '' : `--c:${dim ? 'var(--nobody)' : c(x.a)}`
     const ln = x.t === '-' ? o++ : x.t === '+' ? n++ : (o++, n++)
     const m = MK.get(x) ?? NO
-    out += `<div class="l ${cls} ${m.cls}" style="${col};${m.style}" title="${x.t === ' ' ? '' : esc(nameOf(x.a))}"><span class="n">${ln}</span><span class="s">${x.t === ' ' ? '' : x.t}</span><code>${hl(x.s, lang) || ' '}${m.caret}</code>${m.flag}</div>`
+    out += `<div class="l ${cls} ${m.cls}" style="${col};${m.style}" title="${x.t === ' ' ? '' : esc(nameOf(x.a))}"><span class="n">${ln}</span><span class="s">${x.t === ' ' ? '' : x.t}</span><code>${m.type(hl(x.s, lang)) || ' '}${m.caret}</code>${m.flag}</div>`
   }
   return out
 }
@@ -550,7 +550,7 @@ function srcView(f, d) {
     const cls = x.k === '+' || x.k === '~' ? 'add' : x.k === '-' ? 'del' : ''
     const body = x.k === '~' ? esc(x.pre) + x.runs.map(r => (r.t === '+' ? `<mark>${esc(r.s)}</mark>` : r.t === '-' ? `<del>${esc(r.s)}</del>` : esc(r.s))).join('') : hl(x.s, lang)
     const m = mk.get(x) ?? NO
-    return `<div class="l ${cls} ${m.cls}" style="${col};${m.style}"><span class="n">${ln}</span><span class="s">${x.k === '=' ? '' : x.k === '~' ? '±' : x.k}</span><code>${body || ' '}${m.caret}</code>${m.flag}</div>`
+    return `<div class="l ${cls} ${m.cls}" style="${col};${m.style}"><span class="n">${ln}</span><span class="s">${x.k === '=' ? '' : x.k === '~' ? '±' : x.k}</span><code>${m.type(body) || ' '}${m.caret}</code>${m.flag}</div>`
   })
   return `<div class="doc src"><div class="diff">${rows.join('')}</div></div>`
 }
