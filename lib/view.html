@@ -37,6 +37,11 @@ button { font: inherit; color: inherit; }
 
 /* Shell: top bar, then tree | main | feed. */
 .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; background: var(--panel); }
+.seg a { font: 600 var(--fs-meta)/1 var(--sans); color: var(--mute); text-decoration: none; padding: 5px 10px; border-radius: 999px; }
+.seg a[aria-current] { background: var(--ink); color: var(--bg); }
+.seg a:not([aria-current]):hover { color: var(--ink); }
+.seg a:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 .top h1 { font-size: var(--fs-head); letter-spacing: -0.01em; font-weight: 600; margin: 0; display: flex; align-items: baseline; gap: 10px; }
 .live { font-size: var(--fs-meta); font-weight: 400; color: var(--faint); }
 .live.on { color: var(--add); }
@@ -217,6 +222,8 @@ dialog input { width: 100%; border: 0; border-bottom: 1px solid var(--line); pad
 <body>
 <header class="top">
   <h1>Peers <span class="live" id="live">Offline</span></h1>
+  <nav class="seg" aria-label="View"><a aria-current="page">List</a><a id="officeLink" href="office/">Office</a></nav>
+  <script>document.getElementById('officeLink').href = 'office/' + location.search</script>
   <button class="keys" id="keysbtn" title="Keys (?)"><kbd>?</kbd> Keys</button>
   <button class="find" id="findbtn"><i class="bi bi-search"></i><span>Find a file or heading</span><kbd style="margin-left:auto">⌘K</kbd></button>
 </header>

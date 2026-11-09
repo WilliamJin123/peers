@@ -6,11 +6,15 @@
 <meta name="color-scheme" content="light">
 <title>Peers office</title>
 <link rel="preload" href="../vendor/fonts/fredoka.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="../vendor/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="modulepreload" href="../vendor/three/three.module.min.js">
 <script type="importmap">{"imports":{"three":"../vendor/three/three.module.min.js","three/addons/":"../vendor/three/addons/"}}</script>
 <style>
 @font-face{font-family:"Fredoka";src:url(../vendor/fonts/fredoka.woff2) format("woff2");font-weight:300 700;font-display:swap}
-html,body{margin:0;height:100%;overflow:hidden;background:#fdf4dc;-webkit-tap-highlight-color:transparent}
+@font-face{font-family:"Fraunces";src:url(../vendor/fonts/fraunces.woff2) format("woff2");font-weight:100 900;font-display:swap}
+/* Fraunces: soft corners, no wonk; opsz follows the size */
+html{font-variation-settings:"SOFT" 100,"WONK" 0;font-optical-sizing:auto}
+html,body{margin:0;height:100%;overflow:hidden;background:linear-gradient(#ffe2c6,#ffd0d6,#d6d0ff);-webkit-tap-highlight-color:transparent}
 canvas{display:block;touch-action:none;outline:none}
 body.no-gl{overflow:auto}
 </style>
