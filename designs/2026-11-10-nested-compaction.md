@@ -43,7 +43,7 @@ Pushback kept: the task says "on acp-kernel". The kernel does not fit a host tha
 
 ## Design
 
-One mod, `compact-focus` 0.4.0. `hooks/ladder.ts` holds the pure functions (plain messages in and out, tested alone). `hooks/register.tsx` is the Claude Code hook.
+One mod, `compact-focus` 0.4.0, experimental: on by default, `COMPACT_LADDER=off` folds as 0.3.0 did (William 11-10: "togglable on and off, and on for now"). It moves to the engine package `@wrenautomation/compaction` (WA-1287; William chose it over a folder in wren and wj_skills). `hooks/ladder.ts` holds the pure functions (plain messages in and out, tested alone). `hooks/register.tsx` is the Claude Code hook.
 
 After a compaction the conversation reads, oldest first:
 
