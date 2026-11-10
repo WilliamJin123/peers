@@ -17,10 +17,13 @@ jobs:
       - run: node lib/core.test.mjs
       - run: node lib/tui.test.mjs
       - run: node lib/board.test.mjs
+      - run: node lib/board.contract.test.mjs
       - run: node lib/claims.test.mjs
       - run: node lib/actions.test.mjs
       - run: node lib/view.test.mjs
       - run: node lib/platform.test.mjs
+      - run: node lib/recall.test.mjs
+      - run: node lib/live.test.mjs
       # The supervisor for real on Windows: write the shims as the mod does, install, check, remove.
       - if: runner.os == 'Windows'
         shell: bash

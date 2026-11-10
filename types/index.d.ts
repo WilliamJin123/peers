@@ -98,3 +98,35 @@ declare module 'claude-code' {
 // lib/rows.mjs: the one row model the pane and `peers tui` draw.
 export type Span = { s: string; color?: string; bg?: string; bold?: boolean; dim?: boolean; strike?: boolean; under?: boolean; hit?: boolean }
 export type Row = { key: string; spans: Span[]; press?: { fold: string } | { open: NonNullable<ViewFocus> }; indent?: number }
+
+// The task board behind `peers ready | claim | commit | close` (lib/board.mjs). Built-ins: backlog, jira (acli, REST), github.
+// A custom board: an .mjs whose default export is (config, who) => Board. Held to it at load (CONTRACT, fit): a needed method
+// left out, or half a sweep, fails loud; `peers doctor` names each. Any method may return a Promise.
+// holder: `<who>/<session name>`; an adapter changes only its own machine's (who).
+export type BoardHeld = { id: string; title: string | null; holders: string[] | null; updated: number | null }
+export type Board = {
+  name: string
+  // needed
+  ready(): string | Promise<string>
+  claim(id: string, holders?: string[]): { title: string | null; others?: string[] } | Promise<{ title: string | null; others?: string[] }>
+  note(id: string, text: string): unknown
+  close(id: string, reason: string): unknown
+  // the sweep: all three or none. held: the board's In Progress; holders null when the board cannot tell.
+  held?(): BoardHeld[] | Promise<BoardHeld[]>
+  hold?(id: string, holders: string[]): unknown
+  /** Lets go of this machine's holders (and `expire`: quiet ones of other machines). True: back in the queue. */
+  release?(id: string, queue?: boolean, expire?: string[]): boolean | Promise<boolean>
+  // given when left out
+  /** False: the board's tool is not installed; calls do nothing. Default true. */
+  on?(): boolean
+  /** Unchecked items: close waits for them. Default []. */
+  open?(id: string): string[] | Promise<string[]>
+  openHint?(id: string): string
+  /** Who else holds it: other machines, other people. Default []. */
+  others?(id: string): string[] | Promise<string[]>
+  // more
+  /** The id as the board writes it (`proj-7` -> `PROJ-7`). */
+  key?(id: string): string
+  /** True when the id is this board's (the sweep leaves the rest alone). */
+  covers?(id: string): boolean
+}
