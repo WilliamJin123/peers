@@ -112,7 +112,7 @@ check 'failed claim keeps the old claim' "$(node -p "require('$C/aaaa1111-0.json
 check 'no lock left behind' "$(ls -a "$C" | grep -c '^.lock$')" '0'
 # A killed command left its lock: a dead pid frees it.
 mkdir "$C/.lock" && echo 999999 >"$C/.lock/pid"
-check 'a dead holder frees the lock' "$(A r1 claim TASK-6)" 'claimed TASK-6'
+check 'a dead holder frees the lock' "$(A r1 claim TASK-6 | cut -d';' -f1)" 'claimed TASK-6'
 
 # Two machines, one board. m2 is a second HOME with who m2; each machine writes only its own marks.
 H2="$T/home2"
@@ -186,4 +186,19 @@ sleep 10
 A r1 sweep >/dev/null 2>&1
 check 'a quiet machine is freed' "$(who TASK-12)" 'To Do|'
 check 'm2 is told it was freed' "$(X r1 sweep 2>&1 | grep -c 'freed as quiet.*TASK-12')" '1'
+# One session, several tasks: a claim adds one, close moves to the next, unclaim lets one go.
+backlog task create thirteen >/dev/null
+backlog task create fourteen >/dev/null
+up jjjj9999-0 18
+N() { as jjjj9999-0 "$@"; }
+N r1 claim TASK-13 >/dev/null
+check 'second claim keeps the first' "$(N r1 claim TASK-14)" 'claimed TASK-14; this session also holds TASK-13'
+check 'both are In Progress' "$(who TASK-13);$(who TASK-14)" 'In Progress|@peers:m1/cc-jjjj;In Progress|@peers:m1/cc-jjjj'
+check 'held marks the one in line' "$(N r1 held | grep -c 'TASK-13  cc-jjjj (next)')" '1'
+N r1 sweep >/dev/null 2>&1
+check 'a sweep leaves both held' "$(who TASK-13)" 'In Progress|@peers:m1/cc-jjjj'
+check 'close moves to the next' "$(N r1 close -r done | tail -1)" 'now on TASK-13'
+check 'the closed one is Done, the next stays' "$(who TASK-14);$(who TASK-13)" 'Done|;In Progress|@peers:m1/cc-jjjj'
+check 'unclaim lets go' "$(N r1 unclaim 2>/dev/null)" 'let go of TASK-13'
+check 'the task is back in the queue' "$(who TASK-13)" 'To Do|'
 exit $fails

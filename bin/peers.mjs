@@ -17,9 +17,10 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
-(--whole takes the file as it is). held: who holds each task (from the ledgers). sweep: the board's In Progress, held to the
+(--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
+sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
 tui: the same view full screen in any terminal (no agent session needed).
@@ -254,6 +255,13 @@ const writeClaim = c => {
   renameSync(tmp, claimPath(c.session))
 }
 const dropClaim = id => rmSync(claimPath(id), { force: true })
+// The session is done with its current task: the next one it holds becomes current, else the claim file goes.
+const nextClaim = me => {
+  const [n, ...rest] = me.also ?? []
+  if (!n) return dropClaim(me.session), null
+  writeClaim({ ...me, ticket: n.ticket, title: n.title ?? null, claimed: n.claimed ?? me.claimed, updated: Date.now(), also: rest.length ? rest : undefined })
+  return n.ticket
+}
 // A close while others hold the task: the session's part is done, the last holder out closes it.
 // `closing/<ticket>.json` = [{ session, name, reason, at }], written under the lock.
 const closingDir = join(claimDir, 'closing')
@@ -493,7 +501,7 @@ function withIndexRetry(fn) {
 }
 
 const l = load()
-if (['ready', 'held', 'sweep', 'claim', 'commit', 'close'].includes(cmd) && !existsSync(MOVED)) await withLock(30_000, 'claims', migrate)
+if (['ready', 'held', 'sweep', 'claim', 'unclaim', 'commit', 'close'].includes(cmd) && !existsSync(MOVED)) await withLock(30_000, 'claims', migrate)
 // One task per session, in every repo: its claim file.
 const mine = readClaim(session)
 const bound = mine?.ticket
@@ -809,6 +817,9 @@ switch (cmd) {
   case 'sweep': {
     const notes = await sweep()
     for (const n of notes) console.log(n)
+    // Column rules, where the board has a lint and the config names rules: [{ "status": "Parked", "needs": "Reopen when:" }]
+    const rules = (Array.isArray(config.lint) ? config.lint : []).filter(r => r?.status && r.needs)
+    if (rules.length && board.lint) for (const n of (await tryBoard('sweep', () => board.lint(rules))) ?? []) console.log(n)
     break
   }
   case 'claim': {
@@ -819,7 +830,10 @@ switch (cmd) {
     await withLock(60_000, 'claim', async () => {
       const was = readClaim(session)
       const [now, running, names] = now3()
-      const c = { v: 1, session, agent: l.agent, ticket: id, title: null, claimed: now, updated: now }
+      // A task held before stays held: it moves to `also`. Claiming one of those again makes it current.
+      const same = t => t.toLowerCase() === id.toLowerCase()
+      const also = [...(was && !same(was.ticket) ? [{ ticket: was.ticket, title: was.title ?? null, claimed: was.claimed }] : []), ...(was?.also ?? [])].filter(a => !same(a.ticket))
+      const c = { v: 1, session, agent: l.agent, ticket: id, title: null, claimed: now, updated: now, ...(also.length ? { also } : {}) }
       c.name = holderName(c, names)
       writeClaim(c)
       const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
@@ -834,12 +848,28 @@ switch (cmd) {
         die(`peers claim: ${id} not claimed: ${e.message}`)
       }
       // The title travels in the claim: the views show it without asking the board.
-      writeClaim({ ...c, title: got?.title ?? null, updated: Date.now() })
+      // got.id: the board's spelling of the id, where the board gives it
+      writeClaim({ ...c, ticket: got?.id ?? id, title: got?.title ?? null, updated: Date.now() })
       unClosing(id, session)
       act.log('claim', { ticket: id, title: got?.title ?? null })
       const others = [...all.filter(n => n !== `${who}/${c.name}`).map(n => n.slice(who.length + 1)), ...(got?.others ?? [])]
-      console.log(`claimed ${id}${others.length ? ` (also held by ${others.join(', ')})` : ''}`)
+      console.log(`claimed ${id}${others.length ? ` (also held by ${others.join(', ')})` : ''}${also.length ? `; this session also holds ${also.map(a => a.ticket).join(', ')}` : ''}`)
     })
+    break
+  }
+  // Let go without closing: the task goes back to the queue unless another session holds it.
+  case 'unclaim': {
+    const id = argv[1] ? (board.key ? board.key(argv[1]) : argv[1]) : bound
+    if (!id) die('peers unclaim [task]: this session holds no task')
+    await withLock(60_000, 'claim', async () => {
+      const me = readClaim(session)
+      const same = t => t.toLowerCase() === id.toLowerCase()
+      if (!me || !(same(me.ticket) || (me.also ?? []).some(a => same(a.ticket)))) die(`peers unclaim: this session does not hold ${id}`)
+      const then = same(me.ticket) ? nextClaim(me) : (writeClaim({ ...me, updated: Date.now(), also: me.also.filter(a => !same(a.ticket)) }), me.ticket)
+      act.log('unclaim', { ticket: id })
+      console.log(`let go of ${id}${then ? `; now on ${then}` : ''}`)
+    })
+    for (const n of await sweep()) process.stderr.write(`peers: ${n}\n`)
     break
   }
   case 'close': {
@@ -867,13 +897,13 @@ switch (cmd) {
         // two holders that each wait on the other would both be stuck.
         const who_ = still.map(nameOf_).join(', ')
         addClosing(bound, { session, name: me.name ?? nameOf_(me), reason, at: Date.now() })
-        dropClaim(session)
+        const then = nextClaim(me)
         const [now, running, names] = now3()
         const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
         if (board.hold) await tryBoard('close', () => board.hold(bound, live.get(bound) ?? []))
         await tryBoard('close', () => board.note(bound, `${me.name ?? nameOf_(me)} done: ${reason}`))
         act.log('close', { ticket: bound, reason, waits: who_ })
-        console.log(`done with ${bound}: ${reason}\n${who_} still on it; it goes Done when the last one closes.`)
+        console.log(`done with ${bound}: ${reason}\n${who_} still on it; it goes Done when the last one closes.${then ? `\nnow on ${then}` : ''}`)
         return
       }
       // The other holders let go between the read and the lock: the item check ran only when none held it. Rare: here.
@@ -882,10 +912,10 @@ switch (cmd) {
         if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
       }
       if ((await tryBoard('close', () => board.close(bound, reason))) === null && board.on()) die(`peers close: ${bound} stays bound; fix the board error, then run it again.`)
-      dropClaim(session)
+      const then = nextClaim(me)
       dropClosing(bound)
       act.log('close', { ticket: bound, reason })
-      console.log(`closed ${bound}: ${reason}`)
+      console.log(`closed ${bound}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
     break

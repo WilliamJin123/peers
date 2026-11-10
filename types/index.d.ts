@@ -108,7 +108,7 @@ export type Board = {
   name: string
   // needed
   ready(): string | Promise<string>
-  claim(id: string, holders?: string[]): { title: string | null; others?: string[] } | Promise<{ title: string | null; others?: string[] }>
+  claim(id: string, holders?: string[]): { id?: string; title: string | null; others?: string[] } | Promise<{ id?: string; title: string | null; others?: string[] }>
   note(id: string, text: string): unknown
   close(id: string, reason: string): unknown
   // the sweep: all three or none. held: the board's In Progress; holders null when the board cannot tell.
@@ -122,6 +122,8 @@ export type Board = {
   /** Unchecked items: close waits for them. Default []. */
   open?(id: string): string[] | Promise<string[]>
   openHint?(id: string): string
+  /** Column rules (config `lint`): one line per rule that tasks break. `peers sweep` prints them. Optional. */
+  lint?(rules: { status: string; needs: string }[]): string[] | Promise<string[]>
   /** Who else holds it: other machines, other people. Default []. */
   others?(id: string): string[] | Promise<string[]>
   // more
