@@ -110,6 +110,7 @@ peers files                 # your uncommitted files, for a formatter
 peers check                 # gate (or config `check`) on that commit in ~/worktrees/<repo>-check
 peers close -r "shipped"   # Done, summary carries the sha
 peers log                   # this session's last actions and board writes
+peers recall <words...>     # search this session's whole transcript, compacted parts too (JSON); --around <uuid> for one turn
 peers ls                    # every live session in this repo
 peers doctor                # node, git, shim, PATH, server version, supervisor, board
 peers view                  # live page of every session's edits

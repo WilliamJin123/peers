@@ -561,7 +561,8 @@ export const register: Register = on => {
           text:
             'Peers: other Claude sessions edit this same checkout. Changes in files you did not touch are theirs: never mention, revert, stage or commit them. ' +
             'Your files: `peers status`, `peers diff`, `peers commit -m "..."`, `peers check`. Next task: `peers ready`. Bind one with `peers claim <id>`; `peers close -r "..."` closes it. Do not edit task status by hand. ' +
-            'Before a group of edits, say in one line what they do, like a commit subject: peers shows it as their title.',
+            'Before a group of edits, say in one line what they do, like a commit subject: peers shows it as their title. ' +
+            'Context lost to a compaction: `peers recall <words>` searches this session\'s whole transcript; `--around <uuid>` shows that turn in full.',
         },
       ],
     }

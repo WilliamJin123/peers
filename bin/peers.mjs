@@ -17,7 +17,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
@@ -64,6 +64,23 @@ if (cmd === 'view') {
   await new Promise(() => {}) // the server runs until stopped
 }
 if (!session) die('peers: no session id. Run it from an agent session (Claude Code, or one with peers install), or set PEERS_SESSION.')
+if (cmd === 'recall') {
+  // read only, no repo needed: this session's transcript, compactions included (lib/recall.mjs)
+  const { recall, around } = await import('../lib/recall.mjs')
+  const opt = (k, d) => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : d)
+  const flags = new Set(['--regex', '--no-subagents', '--no-results'])
+  const valued = new Set(['--limit', '--width', '--session', '--around', '-n', '--source'])
+  const terms = argv.slice(1).filter((a, i, all) => !flags.has(a) && !valued.has(a) && !valued.has(all[i - 1]))
+  const sid = opt('--session', session)
+  if (!sid) die('peers recall: no session id; pass --session <id>')
+  const out = opt('--around')
+    ? await around({ home: homedir(), session: sid, uuid: opt('--around'), n: Number(opt('-n', 2)), source: opt('--source', 'main') })
+    : terms.length
+      ? await recall({ home: homedir(), session: sid, terms, regex: argv.includes('--regex'), limit: Number(opt('--limit', 20)), width: Number(opt('--width', 600)), subagents: !argv.includes('--no-subagents'), results: !argv.includes('--no-results') })
+      : die('peers recall <words...> [--regex] [--limit n] [--width n] [--session id] | --around <uuid> [-n k] [--source subagent:<id>]')
+  console.log(JSON.stringify(out, null, 1))
+  process.exit(out.error ? 1 : 0)
+}
 
 const root = (() => {
   try {
