@@ -768,8 +768,13 @@ switch (cmd) {
     const mine = mineDirty(l)
     const extra = argv.slice(1).filter(a => a !== '-v')
     const script = join(root, 'scripts', 'gates.sh')
-    const cmd = config.check ? [config.check, ...extra].join(' ') : existsSync(script) ? `bash scripts/gates.sh ${extra.length ? extra.join(' ') : 'changed'}` : null
-    if (!cmd) die('peers check: no gate here (set `check` in ~/.claude/peers/config.json, or add scripts/gates.sh)')
+    // no gates.sh: the package's `gates` script, whole repo; owner tags still pass a peer-only failure
+    let pkgGates = false
+    try { pkgGates = !!JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts?.gates } catch {}
+    const cmd = config.check ? [config.check, ...extra].join(' ')
+      : existsSync(script) ? `bash scripts/gates.sh ${extra.length ? extra.join(' ') : 'changed'}`
+      : pkgGates ? ['pnpm -s gates', ...extra].join(' ') : null
+    if (!cmd) die('peers check: no gate here (set `check` in ~/.claude/peers/config.json, add scripts/gates.sh or a `gates` script in package.json)')
     console.log(`peers check: ${mine.length} file${mine.length === 1 ? '' : 's'} of yours, peers' files left out`)
     // Output streams through and is kept: its file:line marks say whose a failure is.
     const r = await new Promise(done => {
