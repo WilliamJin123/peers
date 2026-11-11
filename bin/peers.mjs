@@ -10,16 +10,20 @@ import { actions } from '../lib/actions.mjs'
 import { CLAIMS, compact, holding, isLive, joinEntry, nameOf, overlay } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
 import { awayLines, claimsOf, fromLedgers, heldLines, holderName, holdersOf, plan, whoOf } from '../lib/claims.mjs'
-import { claimsSync, configSync, namesSync, runningSync } from '../lib/io.mjs'
+import { claimsSync, configSync, namesSync, runningSync, statusSync } from '../lib/io.mjs'
+import { LANE, deliveryId, labelsOf, pick, place, queueLines, quiet, same as sameTask } from '../lib/queue.mjs'
+import { store } from '../lib/queue-files.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
 import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/lines.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
+Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
+by itself when idle and holding none (the peers mod submits it); next takes one now.
 sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
@@ -83,19 +87,22 @@ if (cmd === 'recall') {
   process.exit(out.error ? 1 : 0)
 }
 
+// The work queue needs no repo: the mod runs `peers next` from any folder.
+const NO_REPO = new Set(['queue', 'serve', 'next'])
 const root = (() => {
   try {
     return slash(git(['rev-parse', '--show-toplevel']).trim(), winOf(homedir()))
   } catch {
+    if (NO_REPO.has(cmd)) return null
     die(`peers: ${process.cwd()} is not in a git repo. cd into the repo you work in.`)
   }
 })()
 // Ledger paths are relative to the root: run every git call from there.
-process.chdir(root)
-const dir = join(homedir(), '.claude', 'peers', encodeURIComponent(root))
+if (root) process.chdir(root)
+const dir = join(homedir(), '.claude', 'peers', encodeURIComponent(root ?? '-'))
 const own = join(dir, `${session}.json`)
-// The action log and the board's outbox: lib/actions.mjs.
-const act = actions(join(dir, `${session}.actions.jsonl`))
+// The action log and the board's outbox: lib/actions.mjs. The queue's board writes: one outbox per session in the claims folder.
+const act = actions(NO_REPO.has(cmd) ? join(CLAIMS(homedir()), 'outbox', `${session}.jsonl`) : join(dir, `${session}.actions.jsonl`))
 
 // Output like git's oneline: a summary line by default, each file under -v, a JSON object under --json.
 const FLAGS = new Set(['-v', '--verbose', '--json'])
@@ -259,7 +266,7 @@ const dropClaim = id => rmSync(claimPath(id), { force: true })
 const nextClaim = me => {
   const [n, ...rest] = me.also ?? []
   if (!n) return dropClaim(me.session), null
-  writeClaim({ ...me, ticket: n.ticket, title: n.title ?? null, claimed: n.claimed ?? me.claimed, updated: Date.now(), also: rest.length ? rest : undefined })
+  writeClaim({ ...me, ticket: n.ticket, title: n.title ?? null, claimed: n.claimed ?? me.claimed, queued: n.queued, updated: Date.now(), also: rest.length ? rest : undefined })
   return n.ticket
 }
 // A close while others hold the task: the session's part is done, the last holder out closes it.
@@ -295,6 +302,17 @@ const unClosing = (t, s) => {
   writeFileSync(tmp, JSON.stringify(rest))
   renameSync(tmp, closingPath(t))
 }
+// The work queue (lib/queue.mjs). Every write under the board lock; board labels after it, through the outbox.
+const Q = store(claimDir)
+// The queue items a claim file carries: its current task's and each `also` task's.
+const queuedOf = c => [c?.queued, ...(c?.also ?? []).map(a => a.queued)].filter(q => q?.item)
+// Back to the head of the queue, in order: a dead holder's or an unclaimed task.
+const requeue = items => {
+  let q = Q.read()
+  for (const i of [...items].reverse()) q = place(q, i, { top: true })
+  Q.write(q)
+}
+const label = (id, labels) => board.queue && board.on() && act.send('queue', [id, labels], send)
 // The board lock: a claim (claim file, then board), a close (board, then claim file) and each sweep run one at a time
 // on this machine. Without it a sweep that read the claims before a claim landed sends the claimed task back to To Do.
 // mkdir is atomic. A holder that died (pid gone) loses it; a live one only after 10 min (a reused pid). Board calls
@@ -402,9 +420,11 @@ const holders = ticket => {
 // Many machines: this one changes only its own holders; a task another machine holds stays, and its dead claim stays
 // until the last machine out sends the task back (release says whether it did).
 let boardHeld = null
+let queueBack = []
 const sweep = async () => {
   if (!board.held || !board.on()) return []
-  return (
+  queueBack = []
+  const notes = (
     (await withLock(15_000, null, async () => {
       const held = (boardHeld = await tryBoard('sweep', () => board.held()))
       if (!held) return []
@@ -447,10 +467,26 @@ const sweep = async () => {
         process.stderr.write(`peers sweep: ${w.ticket} ${what}\n`)
       }
       // Read again: a session that came back (/resume) moved its claim to a new id, and the old file has no ticket.
-      for (const c of dead) if (!failed.has(c.ticket) && readClaim(c.session)?.claimed === c.claimed) dropClaim(c.session)
+      const back = []
+      for (const c of dead) {
+        const file = readClaim(c.session)
+        if (failed.has(c.ticket) || file?.claimed !== c.claimed) continue
+        back.push(...queuedOf(file).map(q => q.item))
+        dropClaim(c.session)
+      }
+      if (back.length) {
+        requeue(back)
+        notes.push(`back in the work queue (the holder is gone): ${back.map(i => i.task).join(', ')}`)
+      }
+      // A serve file of a session no longer running goes; a pin by name still finds it if it comes back.
+      if (running) for (const s of Q.serving().keys()) if (!running.has(s)) Q.unserve(s)
+      queueBack = back
       return notes
     })) ?? []
   )
+  // Labels after the lock: a slow board never holds it.
+  for (const i of queueBack) await label(i.task, labelsOf(i))
+  return notes
 }
 // This machine's claims, then other machines' holds from the board (the sweep's read, else one now).
 const heldNow = async () => {
@@ -535,7 +571,7 @@ if (['ready', 'held', 'sweep', 'claim', 'unclaim', 'commit', 'close'].includes(c
 // One task per session, in every repo: its claim file.
 const mine = readClaim(session)
 const bound = mine?.ticket
-if (['ready', 'claim', 'commit', 'close'].includes(cmd)) await drain()
+if (['ready', 'claim', 'commit', 'close', 'queue', 'next'].includes(cmd)) await drain()
 
 switch (cmd) {
   case 'take': {
@@ -828,6 +864,8 @@ switch (cmd) {
     const out = await tryBoard('ready', () => board.ready())
     if (out === null) process.exit(1)
     console.log(String(out).trimEnd())
+    const queued = Q.read()
+    if (queued.length) console.log(`\nIn the work queue (peers next takes them; do not claim these by hand unless told):\n${queueLines(queued, Q.serving(), namesSync(homedir()), runningSync(homedir(), true)).map(x => `  ${x}`).join('\n')}`)
     const notes = await sweep()
     const held = await heldNow()
     if (held.length) console.log(`\nHeld:\n${held.map(x => `  ${x}`).join('\n')}`)
@@ -857,8 +895,13 @@ switch (cmd) {
       const [now, running, names] = now3()
       // A task held before stays held: it moves to `also`. Claiming one of those again makes it current.
       const same = t => t.toLowerCase() === id.toLowerCase()
-      const also = [...(was && !same(was.ticket) ? [{ ticket: was.ticket, title: was.title ?? null, claimed: was.claimed }] : []), ...(was?.also ?? [])].filter(a => !same(a.ticket))
-      const c = { v: 1, session, agent: l.agent, ticket: id, title: null, claimed: now, updated: now, ...(also.length ? { also } : {}) }
+      const also = [...(was && !same(was.ticket) ? [{ ticket: was.ticket, title: was.title ?? null, claimed: was.claimed, queued: was.queued }] : []), ...(was?.also ?? [])].filter(a => !same(a.ticket))
+      // A queued task claimed by hand leaves the queue: never queued and held at once. It keeps its item for unclaim.
+      const items = Q.read()
+      const item = items.find(i => same(i.task))
+      const had = was && same(was.ticket) ? was.queued : was?.also?.find(a => same(a.ticket))?.queued
+      const c = { v: 1, session, agent: l.agent, ticket: id, title: null, claimed: now, updated: now, ...(also.length ? { also } : {}), ...(item ? { queued: { item, id: deliveryId(item), told: true } } : had ? { queued: had } : {}) }
+      if (item) Q.write(items.filter(i => !same(i.task)))
       c.name = holderName(c, names)
       writeClaim(c)
       const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
@@ -875,6 +918,7 @@ switch (cmd) {
       // The title travels in the claim: the views show it without asking the board.
       // got.id: the board's spelling of the id, where the board gives it
       writeClaim({ ...c, ticket: got?.id ?? id, title: got?.title ?? null, updated: Date.now() })
+      if (item) label(id, [])
       unClosing(id, session)
       act.log('claim', { ticket: id, title: got?.title ?? null })
       const others = [...all.filter(n => n !== `${who}/${c.name}`).map(n => n.slice(who.length + 1)), ...(got?.others ?? [])]
@@ -890,9 +934,12 @@ switch (cmd) {
       const me = readClaim(session)
       const same = t => t.toLowerCase() === id.toLowerCase()
       if (!me || !(same(me.ticket) || (me.also ?? []).some(a => same(a.ticket)))) die(`peers unclaim: this session does not hold ${id}`)
+      const q = same(me.ticket) ? me.queued : me.also.find(a => same(a.ticket))?.queued
+      if (q?.item) requeue([q.item])
       const then = same(me.ticket) ? nextClaim(me) : (writeClaim({ ...me, updated: Date.now(), also: me.also.filter(a => !same(a.ticket)) }), me.ticket)
       act.log('unclaim', { ticket: id })
-      console.log(`let go of ${id}${then ? `; now on ${then}` : ''}`)
+      if (q?.item) label(q.item.task, labelsOf(q.item))
+      console.log(`let go of ${id}${q?.item ? ' (back at the head of the work queue)' : ''}${then ? `; now on ${then}` : ''}`)
     })
     for (const n of await sweep()) process.stderr.write(`peers: ${n}\n`)
     break
@@ -943,6 +990,125 @@ switch (cmd) {
       console.log(`closed ${bound}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
+    break
+  }
+  // The work queue: designs/2026-11-11-work-queue.md.
+  case 'queue': {
+    const sub = argv[1]?.startsWith('-') ? null : argv[1]
+    const opt = k => (argv.includes(k) ? argv[argv.indexOf(k) + 1] : null)
+    const valued = new Set(['--lane', '--pin', '--after'])
+    const ids = argv.slice(2).filter((a, i, all) => !a.startsWith('--') && !valued.has(all[i - 1]) && !FLAGS.has(a)).map(a => (board.key ? board.key(a) : a))
+    const names = namesSync(homedir())
+    const running = runningSync(homedir(), true)
+    if (!sub || sub === 'ls') {
+      const items = Q.read()
+      if (asJson) console.log(JSON.stringify(items))
+      else console.log(items.length ? queueLines(items, Q.serving(), names, running).join('\n') : 'the work queue is empty')
+      break
+    }
+    if (sub === 'add') {
+      if (!ids.length) die('peers queue add <id...> [--lane L] [--pin <session name>] [--top | --after <id>]')
+      const lane = opt('--lane') ?? LANE
+      const pin = opt('--pin')
+      if (pin) {
+        const live = [...(running ?? [])].filter(s => names.get(s) === pin)
+        if (/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(pin)) die(`peers queue add: --pin takes a session's /rename name, not an id (ids change on /resume)`)
+        if (live.length > 1) die(`peers queue add: ${live.length} running sessions are named "${pin}"; /rename one first`)
+        if (!live.length) process.stderr.write(`peers queue add: no running session is named "${pin}"; the item waits for it\n`)
+      }
+      // Board reads before the lock: each task exists and is To Do.
+      const looked = []
+      for (const id of ids) {
+        const t = board.look ? await tryBoard('queue', () => board.look(id)) : { id, title: null, status: null }
+        if (board.look && !t) die(`peers queue add: ${id} not found on the board; nothing queued`)
+        if (t.status && !/^to ?do$/i.test(t.status)) die(`peers queue add: ${t.id} is ${t.status}, not To Do; nothing queued`)
+        looked.push(t)
+      }
+      const added = await withLock(30_000, 'queue', async () => {
+        const held = new Set(claimsSync(homedir()).map(c => c.ticket.toLowerCase()))
+        for (const t of looked) if (held.has(t.id.toLowerCase())) die(`peers queue add: a session holds ${t.id}; nothing queued`)
+        let items = Q.read()
+        let after = opt('--after')
+        const out = []
+        for (const t of looked) {
+          const item = { task: t.id, title: t.title, lane, pin: pin ?? null, by: names.get(session) ?? session.slice(0, 8), at: Date.now() }
+          items = place(items, item, argv.includes('--top') && !out.length ? { top: true } : after ? { after } : {})
+          // Several ids keep their order: each goes after the one before.
+          if (argv.includes('--top') || after) after = t.id
+          out.push(item)
+        }
+        Q.write(items)
+        return out
+      })
+      for (const i of added) await label(i.task, labelsOf(i))
+      console.log(`queued ${added.map(i => i.task).join(', ')} [${lane}]${pin ? ` for ${pin}` : ''}\n${queueLines(Q.read(), Q.serving(), names, running).join('\n')}`)
+      break
+    }
+    if (sub === 'rm') {
+      if (!ids.length) die('peers queue rm <id...>')
+      const gone = await withLock(30_000, 'queue', async () => {
+        const items = Q.read()
+        const out = items.filter(i => ids.some(id => sameTask(i.task, id)))
+        Q.write(items.filter(i => !out.includes(i)))
+        return out
+      })
+      for (const i of gone) await label(i.task, [])
+      console.log(gone.length ? `out of the work queue: ${gone.map(i => i.task).join(', ')}` : 'none of those is queued')
+      break
+    }
+    die('peers queue [ls] | add <id...> [--lane L] [--pin <session name>] [--top | --after <id>] | rm <id...>')
+  }
+  case 'serve': {
+    const lanes = argv.slice(1).filter(a => !a.startsWith('-'))
+    await withLock(30_000, 'serve', async () => (argv.includes('--off') ? Q.unserve(session) : Q.serve(session, lanes.length && !lanes.includes('*') ? lanes : '*')))
+    console.log(argv.includes('--off') ? 'this session takes no queued work now (pins still reach it)' : `this session takes queued work: ${lanes.length && !lanes.includes('*') ? lanes.join(', ') : 'every lane'}. The peers mod hands it the next task when it is idle and holds none.`)
+    break
+  }
+  // Take the head item this session may take. --auto: the mod's call (quiet sessions only, never a second task).
+  // --told <id>: the mod's prompt for that delivery entered.
+  case 'next': {
+    const told = argv.includes('--told') ? argv[argv.indexOf('--told') + 1] : null
+    if (told) {
+      await withLock(5_000, 'next', async () => {
+        const me = readClaim(session)
+        if (me?.queued?.id === told && !me.queued.told) writeClaim({ ...me, queued: { ...me.queued, told: true }, updated: Date.now() })
+      })
+      break
+    }
+    const auto = argv.includes('--auto')
+    const say = v => console.log(asJson ? JSON.stringify(v) : v ? `now on ${v.item.task}${v.item.title ? `: ${v.item.title}` : ''} (lane ${v.item.lane}). Read it: backlog task view ${v.item.task} --plain` : 'nothing in the work queue for this session')
+    if (auto && !quiet(statusSync(homedir()).get(session), Date.now(), (Number.isFinite(Number(config.queueQuietSec)) && config.queueQuietSec !== null ? Number(config.queueQuietSec) : 60) * 1000)) {
+      say(null)
+      break
+    }
+    let holders = null
+    const got = await withLock(auto ? 2_000 : 30_000, auto ? null : 'next', async () => {
+      const me = readClaim(session)
+      // A delivery the mod has not told yet comes first, again.
+      if (me?.queued && !me.queued.told && sameTask(me.ticket, me.queued.item.task)) return { ...me.queued, again: true }
+      if (me && auto) return null
+      const names = namesSync(homedir())
+      const items = Q.read()
+      const item = pick(items, names.get(session) ?? null, Q.lanes(session))
+      if (!item) return null
+      const now = Date.now()
+      const queued = { item, id: deliveryId(item), told: !auto }
+      const also = me ? [{ ticket: me.ticket, title: me.title ?? null, claimed: me.claimed, queued: me.queued }, ...(me.also ?? [])] : []
+      const c = { v: 1, session, agent: l.agent, ticket: item.task, title: item.title ?? null, claimed: now, updated: now, queued, ...(also.length ? { also } : {}) }
+      c.name = holderName(c, names)
+      writeClaim(c)
+      Q.write(items.filter(i => i !== item))
+      const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, runningSync(homedir(), true), names, who)
+      holders = live.get(item.task) ?? [`${who}/${c.name}`]
+      return queued
+    })
+    // The board after the lock, through the outbox: In Progress with its holder, the queue labels off.
+    if (got && !got.again) {
+      await act.send('claim', [got.item.task, holders], send)
+      await label(got.item.task, [])
+      act.log('claim', { ticket: got.item.task, title: got.item.title ?? null, queued: got.id })
+    }
+    say(got)
     break
   }
   case 'log': {

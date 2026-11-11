@@ -131,4 +131,8 @@ export type Board = {
   key?(id: string): string
   /** True when the id is this board's (the sweep leaves the rest alone). */
   covers?(id: string): boolean
+  /** The work queue: a task's id, title and status column (`peers queue add` checks To Do). */
+  look?(id: string): { id: string; title: string | null; status: string | null } | null | Promise<{ id: string; title: string | null; status: string | null } | null>
+  /** The work queue: set the task's queue labels (`queued`, `lane:*`, `pin:*`) to `labels`; [] clears them. */
+  queue?(id: string, labels: string[]): unknown
 }

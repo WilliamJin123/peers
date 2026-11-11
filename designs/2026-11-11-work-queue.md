@@ -174,3 +174,10 @@ On add: labels `queued`, `lane:<L>`, and `pin:<name>` when pinned. On take: the 
 
 - 2026-11-11: William: queue per topic or global; pins as metadata; at least once, exactly once if we can. Chosen: Q1 + D2.
 - 2026-11-11: goldfish review: 36 findings, 22 applied, 14 rejected (API missing: it exists; queue changes not signalled: the view server watches the folder; in-band `close` take dropped instead of fixed; `seq` skip, `move`, error strings, Jira/GitHub mirror cut). Open: none.
+- 2026-11-11: built (0.37.0). Changes from the plan:
+  - The quiet gate reads the session file (`status` idle, `waitingFor`, `statusUpdatedAt` = when it went idle). The CLI checks it in `next --auto` and the mod checks it before it spawns one. No `turn.start` tracking needed.
+  - `queue`, `serve` and `next` run outside a git repo. Their board writes go to an outbox in the claims folder (`outbox/<session>.jsonl`).
+  - A pin matches only a name the person gave (`nameSource: user`), as `namesOf` does.
+  - The pure rules are in `lib/queue.mjs` (the mod imports it), the files in `lib/queue-files.mjs`.
+  - An `also` task keeps its own `queued` (`spread` carries it), so `unclaim` and the sweep put back the right item.
+  - Proof: `scripts/smoke-queue.sh` (28 checks: lanes, pins, quiet gate, a race of two takers, told, hand claim and unclaim, a dead holder) and `lib/queue.test.mjs`.

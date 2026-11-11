@@ -5,6 +5,7 @@ import { MODS, core, dirOf, holds, idOf, nameOf, peerLinesLost, quote, shortTick
 import { isAbs, slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
 import { delta, editDelta } from '../lib/lines.mjs'
+import { mayTake, promptOf, quiet } from '../lib/queue.mjs'
 import { ADD, DEL, HELP, ago, boxCols, boxWindow, boxes, cast, fit, colorRule, docRow, fileHead, gapText, gaps, helpRows, hunkHead, listRows, onlyQuery, terms } from '../lib/rows.mjs'
 
 // One checkout, many sessions. Every session keeps its own ledger file:
@@ -207,11 +208,62 @@ const listen = async ($: any) => {
         if ('text' in piece && piece.stream === 'stdout') {
           streaming = true
           void refreshPeers($).catch(() => {})
+          void deliver($)
           if (tick) void poll($).catch(() => {})
         }
     } catch {}
     streaming = false
     await $.clock.sleep(5000)
+  }
+}
+
+// The work queue (lib/queue.mjs, designs/2026-11-11-work-queue.md): this session's next task, submitted as a prompt
+// when it is idle, quiet, holds no task and the box is empty. `peers next --auto` takes it under the lock; the mod
+// marks it told once the prompt entered. After a reload, an untold delivery is looked up in the transcript first.
+let delivering = false
+const readJ = async ($: any, p: string) => {
+  try {
+    return JSON.parse(await $.fs.read(p))
+  } catch {
+    return null
+  }
+}
+const peersCli = ($: any, args: string[]) =>
+  $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, ...args], { timeoutMs: 15000, cwd: home, env: { PEERS_SESSION: session } })
+const deliver = async ($: any) => {
+  if (delivering || !session || !home) return
+  delivering = true
+  try {
+    await sync($)
+    const dir = `${home}/.claude/peers-claims`
+    // Reads only, until one says there is work: most wakes stop at the first file.
+    const claim = await readJ($, `${dir}/${session}.json`)
+    const untold = claim?.queued && !claim.queued.told
+    if (claim?.ticket && !untold) return
+    const me = pid ? await readJ($, `${home}/.claude/sessions/${pid}.json`) : null
+    if (!untold) {
+      const items = (await readJ($, `${dir}/queue.json`))?.items ?? []
+      if (!items.length) return
+      const lanes = (await readJ($, `${dir}/serve/${session}.json`))?.lanes ?? null
+      // A pin matches a /rename name only (nameSource user), as namesOf in lib/core.mjs.
+      if (!items.some((i: any) => mayTake(i, me?.nameSource === 'user' ? me.name : null, lanes))) return
+    }
+    const cfg = (await readJ($, `${home}/.claude/peers/config.json`)) ?? {}
+    const quietSec = Number.isFinite(Number(cfg.queueQuietSec)) && cfg.queueQuietSec !== null ? Number(cfg.queueQuietSec) : 60
+    if (!quiet(me && { status: me.status, waitingFor: me.waitingFor, statusAt: me.statusUpdatedAt }, await $.clock.now(), quietSec * 1000)) return
+    if ((await $.prompt.read()).text.trim()) return
+    const r = await peersCli($, ['next', '--auto', '--json'])
+    const got = JSON.parse(String(r.stdout ?? '').trim().split('\n').pop() || 'null')
+    if (!got?.id) return
+    if (got.again) {
+      const msgs = await $.session.messages()
+      if (msgs.some((m: any) => m.role === 'user' && String(m.text ?? '').includes(got.id))) return void (await peersCli($, ['next', '--told', got.id]))
+    }
+    const res = await $.prompt.submit({ text: promptOf(got) })
+    if (res && !('drop' in res && res.drop)) await peersCli($, ['next', '--told', got.id])
+  } catch {
+  } finally {
+    delivering = false
   }
 }
 
@@ -334,7 +386,7 @@ export const register: Register = on => {
     // Fill the band now: a resumed session shows its peers before the first tick or turn.
     void refreshPeers($).catch(() => {})
     // Every 2 s with no stream, else every 30 s; the stream's events drive both band and pane.
-    $.clock.every(2000, () => (due('band') ? refreshPeers($) : undefined))
+    $.clock.every(2000, () => (due('band') ? (void deliver($), refreshPeers($)) : undefined))
     void listen($)
     // immediate: it opens mid-turn, never queued behind the running turn.
     await $.command.register({ name: 'peers-view', description: "Open or close the live view of every session's edits", immediate: true })
@@ -543,6 +595,13 @@ export const register: Register = on => {
         {more > 0 && <Text>{`${more} more lines: open \`peers view\` for the whole file.`}</Text>}
       </Box>
     )
+  })
+
+  // A turn ends: the quiet time starts; the stream or the tick hands over the next task after it.
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    void deliver($)
+    return r
   })
 
   on('session.end', async ($, e, next) => {
