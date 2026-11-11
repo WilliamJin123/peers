@@ -45,14 +45,22 @@ Pushback kept: the task says "on acp-kernel". The kernel does not fit a host tha
 
 One mod, `compact-focus` 0.4.0, experimental: on by default, `COMPACT_LADDER=off` folds as 0.3.0 did (William 11-10: "togglable on and off, and on for now"). It moves to the engine package `@wrenautomation/compaction` (WA-1287; William chose it over a folder in wren and wj_skills). `hooks/ladder.ts` holds the pure functions (plain messages in and out, tested alone). `hooks/register.tsx` is the Claude Code hook.
 
-After a compaction the conversation reads, oldest first:
+After a compaction the conversation reads, oldest first (0.5.0, WA-1304):
 
 ```
-[parts]    one user message per earlier fold: a marker line, then that fold's Done and Keys. Kept by handle, byte for byte.
-[index]    the summarizer's message: NOW, RULES, DONE, KEYS. Written new each time.
-[pointer]  one line: where the full text of the work under DONE is.
-[tail]     the newest messages, word for word.
+[recap]  one user message: a header line, then RULES, NOW, DONE (this fold), its file,
+         then each earlier fold's file and DONE lines, oldest first. Rebuilt each fold.
+[tail]   the newest messages, word for word.
 ```
+
+0.4.0 left three to ten messages in the user's voice (parts, the engine's summary with its "continue without asking" prose, a pointer). William 11-11: they dilute his instructions. So 0.5.0:
+
+- **One recap message** in place of parts, summary and pointer. Its header says it is not typed by the user and that its RULES are the user's.
+- **Rules first**, in the recap, not in the system prompt. The system prompt was the other option (a `prompt.compose` section): more weight, but a summarizer error then carries system weight, and the rules need a second home. William left it to me; one place won.
+- **No engine prose.** The hook keeps the summary from its first heading to END and the engine's `<system-reminder>` blocks (its tool record); the wrapper lines go.
+- **No KEYS.** DONE lines carry the rare words a search needs.
+- **Re-read files as one line.** After a fold the engine attaches again each file read before it (a `file` attachment, 7k tokens in one session). A `prompt.attachment` hook replaces each with "<path> was read before the last compaction". A file the user @-mentioned (`prompt.mention`) keeps its text. Skill bodies (`invoked_skills`) stay whole: their rules still hold mid-task.
+- **Move-over.** A session with 0.4.0 parts and pointer reads them as earlier folds at its next fold.
 
 - **Now and Rules roll.** Each compaction writes them new: every rule that still stands, in the user's words, and one current state. So no stale "Now" and no rule that a later one reversed.
 - **Done and Keys freeze.** At the next compaction the hook (no model) cuts DONE and KEYS out of the old index and makes a part of them, with the pointer's file in its marker. The summarizer is told: the parts are done; write DONE and KEYS only for the work after the last index.
@@ -106,3 +114,4 @@ Headless Haiku, three `/compact` runs, 7 unit tests pass.
 ## Log
 
 - 2026-11-10: goldfish review: 29 findings, 17 applied, 12 rejected; open: Wren agent children, the trigger. Applied: precompute follows the ladder; no model merge (a merge would summarize summaries); Now and Rules roll, Done and Keys freeze; parts have their own cap; files named by time; three more measure cases. Rejected: secrets in part files (the `.jsonl` holds the same text), a glossary, unit-case lists in the doc.
+- 2026-11-11: 0.5.0 (WA-1304): one recap message, rules first, no KEYS, no engine prose, re-read files as one line. Proof: headless Haiku, two folds: the rules, both folds' DONE and the codeword held; with the stricter boundary line the second DONE no longer copied the first; an @-mentioned file kept its text.
