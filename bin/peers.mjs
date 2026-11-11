@@ -2,10 +2,10 @@
 // peers: git scoped to the files this agent session touched.
 // Ledger: ~/.claude/peers/<encodeURIComponent(repo root)>/<session>.json, written by the peers mod (Claude Code)
 // or by `peers hook <agent>` (Codex, Cursor), both through lib/core.mjs.
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, hostname, userInfo } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { CLAIMS, compact, holding, isLive, joinEntry, nameOf, overlay } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
@@ -763,70 +763,47 @@ switch (cmd) {
     break
   }
   case 'check': {
-    // Your work alone: HEAD plus your uncommitted hunks, as a commit no ref names, in one side worktree per repo.
-    // A peer's uncommitted work is not in it, so their break never fails your check. No commit needed first.
-    const wt = join(homedir(), 'worktrees', `${basename(root)}-check`)
-    // One check per worktree at a time: the next waits (a gate takes minutes).
-    const gate = `${wt}.lock`
-    for (let told = false; ; ) {
-      try {
-        mkdirSync(gate, { recursive: false })
-        writeFileSync(join(gate, 'pid'), String(process.pid))
-        process.on('exit', () => rmSync(gate, { recursive: true, force: true }))
-        break
-      } catch (e) {
-        if (e.code === 'ENOENT') mkdirSync(dirname(gate), { recursive: true })
-        else if (e.code !== 'EEXIST') throw e
-        else {
-          let dead = false
-          try {
-            process.kill(Number(readFileSync(join(gate, 'pid'), 'utf8')), 0)
-          } catch (k) {
-            dead = k.code === 'ESRCH' || (k.code === 'ENOENT' && Date.now() - statSync(gate).mtimeMs > 5000)
-          }
-          if (dead) rmSync(gate, { recursive: true, force: true })
-          else {
-            if (!told) console.log(`peers check: another session's check runs in ${wt}; waiting`)
-            told = true
-            sleepMs(2000)
-          }
-        }
-      }
-    }
-    const head = git(['rev-parse', 'HEAD']).trim()
+    // In place, on this session's files alone: the gate gets them in PEERS_FILES and checks only them and their
+    // packages. A failure names whose file it is; failures only in peers' files do not fail your check. CI judges the commit.
     const mine = mineDirty(l)
-    let sha = head
-    const notes = []
-    if (mine.length) {
-      const index = git(['rev-parse', '--path-format=absolute', '--git-path', `peers-${session}-check.index`]).trim()
-      const env = { ...process.env, GIT_INDEX_FILE: index }
-      process.on('exit', () => rmSync(index, { force: true }))
-      buildTree(mine, head, env, peers(), notes)
-      const tree = git(['write-tree'], { env }).trim()
-      if (tree !== git(['rev-parse', `${head}^{tree}`]).trim()) sha = git(['commit-tree', tree, '-p', head, '-m', `peers check: ${nameOf(l)}`]).trim()
-    }
-    if (!existsSync(wt)) git(['worktree', 'add', '-q', '--detach', wt, sha])
-    else git(['-C', wt, 'checkout', '-q', '-f', '--detach', sha])
-    git(['-C', wt, 'clean', '-fdq'])
-    console.log(`peers check: HEAD ${head.slice(0, 7)}${sha === head ? '' : ` + your uncommitted work (${mine.length} file${mine.length === 1 ? '' : 's'})`}, peers' uncommitted work left out`)
-    for (const x of verbose ? notes : notes.slice(0, 3)) console.log(`note: ${x}`)
-    // Every run: a commit that moves the lockfile or a package.json needs fresh node_modules; a no-op otherwise.
-    if (existsSync(join(wt, 'pnpm-lock.yaml'))) {
-      const pn = platform(process.platform).npmCommand('pnpm', ['install', '--frozen-lockfile', '--prefer-offline', '--silent'])
-      const i = spawnSync(pn.cmd, pn.args, { cwd: wt, stdio: 'inherit', shell: pn.shell })
-      if (i.status !== 0) die(`peers check: pnpm install failed in ${wt}`)
-    }
-    // `check` in the config (a shell line, as `npm test`), else the repo's gate script, else the commit's stat.
-    // The gate goes through bash: Windows runs no .sh by itself (Git for Windows brings bash). Extra args go to the gate.
     const extra = argv.slice(1).filter(a => a !== '-v')
-    const script = join(wt, 'scripts', 'gates.sh')
-    const r = config.check
-      ? spawnSync([config.check, ...extra].join(' '), { cwd: wt, stdio: 'inherit', shell: true })
-      : existsSync(script)
-        ? spawnSync('bash', [script, ...(extra.length ? extra : ['changed'])], { cwd: wt, stdio: 'inherit' })
-        : spawnSync('git', ['-C', wt, 'show', '--stat', '--oneline', 'HEAD'], { stdio: 'inherit' })
-    act.log('check', { sha, head, status: r.status ?? 1 })
-    process.exit(r.status ?? 1)
+    const script = join(root, 'scripts', 'gates.sh')
+    const cmd = config.check ? [config.check, ...extra].join(' ') : existsSync(script) ? `bash scripts/gates.sh ${extra.length ? extra.join(' ') : 'changed'}` : null
+    if (!cmd) die('peers check: no gate here (set `check` in ~/.claude/peers/config.json, or add scripts/gates.sh)')
+    console.log(`peers check: ${mine.length} file${mine.length === 1 ? '' : 's'} of yours, peers' files left out`)
+    // Output streams through and is kept: its file:line marks say whose a failure is.
+    const r = await new Promise(done => {
+      const kid = spawn(cmd, { cwd: root, shell: true, env: { ...process.env, PEERS_FILES: mine.join('\n') }, stdio: ['inherit', 'pipe', 'pipe'] })
+      const got = { stdout: '', stderr: '' }
+      kid.stdout.on('data', d => (process.stdout.write(d), (got.stdout += d)))
+      kid.stderr.on('data', d => (process.stderr.write(d), (got.stderr += d)))
+      kid.on('close', status => done({ ...got, status }))
+      kid.on('error', e => done({ ...got, stderr: got.stderr + e.message, status: 1 }))
+    })
+    let status = r.status ?? 1
+    if (status !== 0) {
+      const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.replace(/\x1b\[[0-9;]*m/g, '')
+      // biome `path:12:3`, tsc `path(12,3)`; tsc under turbo prints the path from its package's folder.
+      const hit = [...new Set([...out.matchAll(/([\w@./-]+\.[a-z]{1,5})(?::\d+:\d+|\(\d+,\d+\))/gi)].map(m => m[1].replace(/^\.\//, '')))]
+      const dirty = [...dirtySet()]
+      const live = peers()
+      const ownerOf = f => {
+        const at = dirty.filter(d => d === f || d.endsWith(`/${f}`))
+        if (!at.length) return { f, who: null }
+        const d = at[0]
+        if (mine.includes(d)) return { f: d, who: 'you' }
+        const who = live.filter(p => p.files[d]).map(nameOf)
+        return { f: d, who: who.length ? who.join(', ') : null }
+      }
+      const owners = hit.map(ownerOf)
+      const theirs = owners.filter(o => o.who && o.who !== 'you')
+      if (owners.length && theirs.length === owners.length) {
+        console.log(`peers check: every failure is in a peer's uncommitted file, not yours: ${theirs.map(o => `${o.f} (${o.who})`).join(', ')}. Not counted against you.`)
+        status = 0
+      } else if (theirs.length) console.log(`peers check: some failures are in peers' files: ${theirs.map(o => `${o.f} (${o.who})`).join(', ')}. The rest are yours or committed code.`)
+    }
+    act.log('check', { files: mine.length, status })
+    process.exit(status)
   }
   case 'ls': {
     const rows = [{ ...l, me: true }, ...peers()]
