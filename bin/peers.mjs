@@ -5,7 +5,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, hostname, userInfo } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { CLAIMS, compact, holding, isLive, joinEntry, nameOf, overlay } from '../lib/core.mjs'
 import { boardOf } from '../lib/board.mjs'
@@ -342,6 +342,36 @@ const unlock = () => {
     return
   }
   rmSync(LOCK, { recursive: true, force: true })
+}
+// HEAD plus this session's hunks of `mine`, into the private index `env` names. Notes: what stays out, and why.
+const buildTree = (mine, head, env, live, notes, all = false) => {
+  git(['read-tree', head], { env })
+  const whole = []
+  const files = []
+  for (const f of mine) {
+    const s = all ? { whole: true } : split(f, live)
+    if (s.whole && s.none && s.who) {
+      notes.push(`${f}: skipped, no lines of yours (${s.who.join(', ')} edited it); --whole takes it`)
+      continue
+    }
+    if (s.whole) {
+      whole.push(f)
+      files.push(f)
+      if (s.who) notes.push(`${f}: whole file, it also carries uncommitted lines of ${s.who.join(', ')}${s.uncut ? ' (cannot split this file)' : s.blind ? ' (no line data for a peer)' : ''}`)
+      continue
+    }
+    const take = [...s.mine, ...s.mixed]
+    if (s.theirs.length) notes.push(`${f}: left ${s.theirs.length} hunk(s) of ${s.who.join(', ')} uncommitted`)
+    if (s.none.length) notes.push(`${f}: left ${s.none.length} hunk(s) no session recorded (peers take ${f}, or --whole)`)
+    if (s.mixed.length) notes.push(`${f}: ${s.mixed.length} hunk(s) mix your lines with ${s.who.join(', ')}'s; committed whole`)
+    if (!take.length) continue
+    const blob = git(['hash-object', '-w', '--stdin'], { input: applyHunks(git(['show', `${head}:${f}`]), take) }).trim()
+    const mode = git(['ls-tree', head, '--', f]).split(/\s/)[0] || '100644'
+    git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${f}`], { env })
+    files.push(f)
+  }
+  if (whole.length) git(['add', '-A', '--', ...whole], { env })
+  return { whole, files }
 }
 const withLock = async (waitMs, what, f) => {
   if (!lock(waitMs)) {
@@ -682,32 +712,7 @@ switch (cmd) {
       at = Date.now()
       const live = peers()
       const head = git(['rev-parse', 'HEAD']).trim()
-      git(['read-tree', head], { env })
-      const whole = []
-      const files = []
-      for (const f of mine) {
-        const s = argv.includes('--whole') ? { whole: true } : split(f, live)
-        if (s.whole && s.none && s.who) {
-          notes.push(`${f}: skipped, no lines of yours (${s.who.join(', ')} edited it); --whole takes it`)
-          continue
-        }
-        if (s.whole) {
-          whole.push(f)
-          files.push(f)
-          if (s.who) notes.push(`${f}: whole file, it also carries uncommitted lines of ${s.who.join(', ')}${s.uncut ? ' (cannot split this file)' : s.blind ? ' (no line data for a peer)' : ''}`)
-          continue
-        }
-        const take = [...s.mine, ...s.mixed]
-        if (s.theirs.length) notes.push(`${f}: left ${s.theirs.length} hunk(s) of ${s.who.join(', ')} uncommitted`)
-        if (s.none.length) notes.push(`${f}: left ${s.none.length} hunk(s) no session recorded (peers take ${f}, or --whole)`)
-        if (s.mixed.length) notes.push(`${f}: ${s.mixed.length} hunk(s) mix your lines with ${s.who.join(', ')}'s; committed whole`)
-        if (!take.length) continue
-        const blob = git(['hash-object', '-w', '--stdin'], { input: applyHunks(git(['show', `${head}:${f}`]), take) }).trim()
-        const mode = git(['ls-tree', head, '--', f]).split(/\s/)[0] || '100644'
-        git(['update-index', '--add', '--cacheinfo', `${mode},${blob},${f}`], { env })
-        files.push(f)
-      }
-      if (whole.length) git(['add', '-A', '--', ...whole], { env })
+      const { files } = buildTree(mine, head, env, live, notes, argv.includes('--whole'))
       const tree = git(['write-tree'], { env }).trim()
       if (tree === git(['rev-parse', `${head}^{tree}`]).trim()) die(`nothing of yours to commit${notes.length ? `\n${notes.join('\n')}` : ''}`)
       const commit = git(['commit-tree', tree, '-p', head, '-F', '-'], { input: body }).trim()
@@ -758,31 +763,69 @@ switch (cmd) {
     break
   }
   case 'check': {
-    const last = l.commits.at(-1)
-    if (!last) die('no commit of yours yet: peers commit first')
+    // Your work alone: HEAD plus your uncommitted hunks, as a commit no ref names, in one side worktree per repo.
+    // A peer's uncommitted work is not in it, so their break never fails your check. No commit needed first.
     const wt = join(homedir(), 'worktrees', `${basename(root)}-check`)
-    if (!existsSync(wt)) {
-      mkdirSync(join(homedir(), 'worktrees'), { recursive: true })
-      git(['worktree', 'add', '--detach', wt, last.sha], { stdio: 'inherit' })
-    } else {
-      git(['-C', wt, 'checkout', '-q', '--detach', last.sha])
+    // One check per worktree at a time: the next waits (a gate takes minutes).
+    const gate = `${wt}.lock`
+    for (let told = false; ; ) {
+      try {
+        mkdirSync(gate, { recursive: false })
+        writeFileSync(join(gate, 'pid'), String(process.pid))
+        process.on('exit', () => rmSync(gate, { recursive: true, force: true }))
+        break
+      } catch (e) {
+        if (e.code === 'ENOENT') mkdirSync(dirname(gate), { recursive: true })
+        else if (e.code !== 'EEXIST') throw e
+        else {
+          let dead = false
+          try {
+            process.kill(Number(readFileSync(join(gate, 'pid'), 'utf8')), 0)
+          } catch (k) {
+            dead = k.code === 'ESRCH' || (k.code === 'ENOENT' && Date.now() - statSync(gate).mtimeMs > 5000)
+          }
+          if (dead) rmSync(gate, { recursive: true, force: true })
+          else {
+            if (!told) console.log(`peers check: another session's check runs in ${wt}; waiting`)
+            told = true
+            sleepMs(2000)
+          }
+        }
+      }
     }
-    console.log(`peers check: ${wt} at ${git(['-C', wt, 'log', '-1', '--format=%h %s']).trim()}`)
+    const head = git(['rev-parse', 'HEAD']).trim()
+    const mine = mineDirty(l)
+    let sha = head
+    const notes = []
+    if (mine.length) {
+      const index = git(['rev-parse', '--path-format=absolute', '--git-path', `peers-${session}-check.index`]).trim()
+      const env = { ...process.env, GIT_INDEX_FILE: index }
+      process.on('exit', () => rmSync(index, { force: true }))
+      buildTree(mine, head, env, peers(), notes)
+      const tree = git(['write-tree'], { env }).trim()
+      if (tree !== git(['rev-parse', `${head}^{tree}`]).trim()) sha = git(['commit-tree', tree, '-p', head, '-m', `peers check: ${nameOf(l)}`]).trim()
+    }
+    if (!existsSync(wt)) git(['worktree', 'add', '-q', '--detach', wt, sha])
+    else git(['-C', wt, 'checkout', '-q', '-f', '--detach', sha])
+    git(['-C', wt, 'clean', '-fdq'])
+    console.log(`peers check: HEAD ${head.slice(0, 7)}${sha === head ? '' : ` + your uncommitted work (${mine.length} file${mine.length === 1 ? '' : 's'})`}, peers' uncommitted work left out`)
+    for (const x of verbose ? notes : notes.slice(0, 3)) console.log(`note: ${x}`)
     // Every run: a commit that moves the lockfile or a package.json needs fresh node_modules; a no-op otherwise.
     if (existsSync(join(wt, 'pnpm-lock.yaml'))) {
-      const pn = platform(process.platform).npmCommand('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'])
+      const pn = platform(process.platform).npmCommand('pnpm', ['install', '--frozen-lockfile', '--prefer-offline', '--silent'])
       const i = spawnSync(pn.cmd, pn.args, { cwd: wt, stdio: 'inherit', shell: pn.shell })
       if (i.status !== 0) die(`peers check: pnpm install failed in ${wt}`)
     }
     // `check` in the config (a shell line, as `npm test`), else the repo's gate script, else the commit's stat.
-    // The gate goes through bash: Windows runs no .sh by itself (Git for Windows brings bash).
-    const gate = join(wt, 'scripts', 'gates.sh')
+    // The gate goes through bash: Windows runs no .sh by itself (Git for Windows brings bash). Extra args go to the gate.
+    const extra = argv.slice(1).filter(a => a !== '-v')
+    const script = join(wt, 'scripts', 'gates.sh')
     const r = config.check
-      ? spawnSync(config.check, { cwd: wt, stdio: 'inherit', shell: true })
-      : existsSync(gate)
-        ? spawnSync('bash', [gate, 'changed'], { cwd: wt, stdio: 'inherit' })
+      ? spawnSync([config.check, ...extra].join(' '), { cwd: wt, stdio: 'inherit', shell: true })
+      : existsSync(script)
+        ? spawnSync('bash', [script, ...(extra.length ? extra : ['changed'])], { cwd: wt, stdio: 'inherit' })
         : spawnSync('git', ['-C', wt, 'show', '--stat', '--oneline', 'HEAD'], { stdio: 'inherit' })
-    act.log('check', { sha: last.sha, status: r.status ?? 1 })
+    act.log('check', { sha, head, status: r.status ?? 1 })
     process.exit(r.status ?? 1)
   }
   case 'ls': {
