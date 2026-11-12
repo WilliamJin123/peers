@@ -230,13 +230,16 @@ const readJ = async ($: any, p: string) => {
 }
 const peersCli = ($: any, args: string[]) =>
   $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, ...args], { timeoutMs: 15000, cwd: home, env: { PEERS_SESSION: session } })
-// Why the last wake stopped: peers-run/deliver-<session>.json, written on a change only.
-let lastStop = ''
+// Why wakes stopped: peers-run/deliver-<session>.json, the last 20 changes, each with its count.
+const stops: { why: string; at: number; n: number }[] = []
 const stopAt = async ($: any, why: string) => {
-  if (why === lastStop) return
-  lastStop = why
+  const at = await $.clock.now()
+  const last = stops.at(-1)
+  if (last?.why === why) return void last.n++
+  stops.push({ why, at, n: 1 })
+  if (stops.length > 20) stops.shift()
   try {
-    await $.fs.write(`${home}/.claude/peers-run/deliver-${session}.json`, JSON.stringify({ why, at: await $.clock.now() }))
+    await $.fs.write(`${home}/.claude/peers-run/deliver-${session}.json`, JSON.stringify(stops, null, 1))
   } catch {}
 }
 const deliver = async ($: any) => {
