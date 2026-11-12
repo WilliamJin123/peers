@@ -230,39 +230,52 @@ const readJ = async ($: any, p: string) => {
 }
 const peersCli = ($: any, args: string[]) =>
   $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, ...args], { timeoutMs: 15000, cwd: home, env: { PEERS_SESSION: session } })
+// Why the last wake stopped: peers-run/deliver-<session>.json, written on a change only.
+let lastStop = ''
+const stopAt = async ($: any, why: string) => {
+  if (why === lastStop) return
+  lastStop = why
+  try {
+    await $.fs.write(`${home}/.claude/peers-run/deliver-${session}.json`, JSON.stringify({ why, at: await $.clock.now() }))
+  } catch {}
+}
 const deliver = async ($: any) => {
   if (delivering || !session || !home) return
   delivering = true
+  let why = 'error'
   try {
     await sync($)
     const dir = `${home}/.claude/peers-claims`
     // Reads only, until one says there is work: most wakes stop at the first file.
     const claim = await readJ($, `${dir}/${session}.json`)
     const untold = claim?.queued && !claim.queued.told
-    if (claim?.ticket && !untold) return
+    if (claim?.ticket && !untold) return void (why = 'holds a task')
     const me = pid ? await readJ($, `${home}/.claude/sessions/${pid}.json`) : null
     if (!untold) {
       const items = (await readJ($, `${dir}/queue.json`))?.items ?? []
-      if (!items.length) return
+      if (!items.length) return void (why = 'queue empty')
       const lanes = (await readJ($, `${dir}/serve/${session}.json`))?.lanes ?? null
       // A pin matches a /rename name only (nameSource user), as namesOf in lib/core.mjs.
-      if (!items.some((i: any) => mayTake(i, me?.nameSource === 'user' ? me.name : null, lanes))) return
+      if (!items.some((i: any) => mayTake(i, me?.nameSource === 'user' ? me.name : null, lanes))) return void (why = `nothing for ${me?.nameSource === 'user' ? me.name : 'no name'}`)
     }
     const cfg = (await readJ($, `${home}/.claude/peers/config.json`)) ?? {}
     const quietSec = Number.isFinite(Number(cfg.queueQuietSec)) && cfg.queueQuietSec !== null ? Number(cfg.queueQuietSec) : 60
-    if (!quiet(me && { status: me.status, waitingFor: me.waitingFor, statusAt: me.statusUpdatedAt }, await $.clock.now(), quietSec * 1000)) return
-    if ((await $.prompt.read()).text.trim()) return
+    if (!quiet(me && { status: me.status, waitingFor: me.waitingFor, statusAt: me.statusUpdatedAt }, await $.clock.now(), quietSec * 1000)) return void (why = `not quiet: ${me?.status ?? 'no session file'}`)
+    if ((await $.prompt.read()).text.trim()) return void (why = 'box has text')
     const r = await peersCli($, ['next', '--auto', '--json'])
     const got = JSON.parse(String(r.stdout ?? '').trim().split('\n').pop() || 'null')
-    if (!got?.id) return
+    if (!got?.id) return void (why = `next: ${String(r.stdout ?? r.stderr ?? '').slice(-200)}`)
     if (got.again) {
       const msgs = await $.session.messages()
-      if (msgs.some((m: any) => m.role === 'user' && String(m.text ?? '').includes(got.id))) return void (await peersCli($, ['next', '--told', got.id]))
+      if (msgs.some((m: any) => m.role === 'user' && String(m.text ?? '').includes(got.id))) return void ((why = `already told ${got.id}`), await peersCli($, ['next', '--told', got.id]))
     }
     const res = await $.prompt.submit({ text: promptOf(got) })
     if (res && !('drop' in res && res.drop)) await peersCli($, ['next', '--told', got.id])
-  } catch {
+    why = `sent ${got.id}${res && 'drop' in res && res.drop ? ' (dropped)' : ''}`
+  } catch (err) {
+    why = `error: ${String((err as any)?.message ?? err).slice(0, 200)}`
   } finally {
+    await stopAt($, why)
     delivering = false
   }
 }
