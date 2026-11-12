@@ -201,4 +201,13 @@ check 'close moves to the next' "$(N r1 close -r done | tail -1)" 'now on TASK-1
 check 'the closed one is Done, the next stays' "$(who TASK-14);$(who TASK-13)" 'Done|;In Progress|@peers:m1/cc-jjjj'
 check 'unclaim lets go' "$(N r1 unclaim 2>/dev/null)" 'let go of TASK-13'
 check 'the task is back in the queue' "$(who TASK-13)" 'To Do|'
+# close <id>: closes that held task, not the current one; an id the session does not hold closes nothing.
+backlog task create fifteen >/dev/null
+backlog task create sixteen >/dev/null
+N r1 claim TASK-15 >/dev/null
+N r1 claim TASK-16 >/dev/null
+check 'close <id> names the task' "$(N r1 close task-15 -r done | head -1)" 'closed TASK-15: done'
+check 'close <id>: that one is Done, the current stays' "$(who TASK-15);$(who TASK-16)" 'Done|;In Progress|@peers:m1/cc-jjjj'
+check 'close <id> not held: refused' "$(N r1 close TASK-14 2>&1 | grep -c 'does not hold TASK-14')" '1'
+check 'close <id> not held: current stays' "$(who TASK-16)" 'In Progress|@peers:m1/cc-jjjj'
 exit $fails

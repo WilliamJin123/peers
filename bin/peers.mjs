@@ -19,7 +19,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
@@ -956,48 +956,61 @@ switch (cmd) {
   }
   case 'close': {
     if (!bound) die('no ticket bound: peers claim <ticket> first')
+    // `close <id>`: a held task that is not current becomes current first; the old current is next after the close.
+    const named = argv[1] && !argv[1].startsWith('-') ? (board.key ? board.key(argv[1]) : argv[1]) : null
+    let target = bound
+    if (named && named.toLowerCase() !== bound.toLowerCase())
+      await withLock(60_000, 'claim', async () => {
+        const me = readClaim(session)
+        const same = t => t.toLowerCase() === named.toLowerCase()
+        const hit = (me?.also ?? []).find(a => same(a.ticket))
+        if (!hit) die(`peers close: this session does not hold ${named} (it holds ${[me?.ticket, ...(me?.also ?? []).map(a => a.ticket)].filter(Boolean).join(', ')}); nothing closed`)
+        const was = { ticket: me.ticket, title: me.title ?? null, claimed: me.claimed, queued: me.queued }
+        writeClaim({ ...me, ticket: hit.ticket, title: hit.title ?? null, claimed: hit.claimed ?? me.claimed, queued: hit.queued, updated: Date.now(), also: [was, ...me.also.filter(a => !same(a.ticket))] })
+        target = hit.ticket
+      })
     const i = argv.indexOf('-r')
-    const reason = (i > 0 ? argv[i + 1] : 'done') + ticketShas(bound)
+    const reason = (i > 0 ? argv[i + 1] : 'done') + ticketShas(target)
     const force = argv.includes('--force')
     const nameOf_ = p => holderName(p, namesSync(homedir()))
     // Board reads before the lock: a slow board never holds it. Only this machine's live sessions keep a task open:
     // their liveness is known. Other machines and people (marks, comments, assignees) get a line, never a wait.
     let away = [], checked = force
-    if (!force && !holders(bound).length) {
+    if (!force && !holders(target).length) {
       checked = true
-      away = (board.others && (await tryBoard('close', () => board.others(bound)))) || []
-      const open = (await tryBoard('close', () => board.open(bound))) ?? []
-      if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
+      away = (board.others && (await tryBoard('close', () => board.others(target)))) || []
+      const open = (await tryBoard('close', () => board.open(target))) ?? []
+      if (open.length) die(`peers close: ${target} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(target)} --force closes anyway.`)
     }
     await withLock(60_000, 'close', async () => {
       // Read again under the lock: a parallel command of this session may have moved the claim.
       const me = readClaim(session)
-      if (me?.ticket !== bound) die(`peers close: the claim moved off ${bound} while this ran. Run it again.`)
-      const still = force ? [] : holders(bound)
+      if (me?.ticket !== target) die(`peers close: the claim moved off ${target} while this ran. Run it again.`)
+      const still = force ? [] : holders(target)
       if (still.length) {
         // My part is done; the last holder out closes it (its close, or the sweep once it is gone). Never a refusal:
         // two holders that each wait on the other would both be stuck.
         const who_ = still.map(nameOf_).join(', ')
-        addClosing(bound, { session, name: me.name ?? nameOf_(me), reason, at: Date.now() })
+        addClosing(target, { session, name: me.name ?? nameOf_(me), reason, at: Date.now() })
         const then = nextClaim(me)
         const [now, running, names] = now3()
         const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
-        if (board.hold) await tryBoard('close', () => board.hold(bound, live.get(bound) ?? []))
-        await tryBoard('close', () => board.note(bound, `${me.name ?? nameOf_(me)} done: ${reason}`))
-        act.log('close', { ticket: bound, reason, waits: who_ })
-        console.log(`done with ${bound}: ${reason}\n${who_} still on it; it goes Done when the last one closes.${then ? `\nnow on ${then}` : ''}`)
+        if (board.hold) await tryBoard('close', () => board.hold(target, live.get(target) ?? []))
+        await tryBoard('close', () => board.note(target, `${me.name ?? nameOf_(me)} done: ${reason}`))
+        act.log('close', { ticket: target, reason, waits: who_ })
+        console.log(`done with ${target}: ${reason}\n${who_} still on it; it goes Done when the last one closes.${then ? `\nnow on ${then}` : ''}`)
         return
       }
       // The other holders let go between the read and the lock: the item check ran only when none held it. Rare: here.
       if (!checked) {
-        const open = (await tryBoard('close', () => board.open(bound))) ?? []
-        if (open.length) die(`peers close: ${bound} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(bound)} --force closes anyway.`)
+        const open = (await tryBoard('close', () => board.open(target))) ?? []
+        if (open.length) die(`peers close: ${target} has ${open.length} unchecked item(s):\n${open.join('\n')}\n${board.openHint(target)} --force closes anyway.`)
       }
-      if ((await tryBoard('close', () => board.close(bound, reason))) === null && board.on()) die(`peers close: ${bound} stays bound; fix the board error, then run it again.`)
+      if ((await tryBoard('close', () => board.close(target, reason))) === null && board.on()) die(`peers close: ${target} stays open; fix the board error, then run it again.`)
       const then = nextClaim(me)
-      dropClosing(bound)
-      act.log('close', { ticket: bound, reason })
-      console.log(`closed ${bound}: ${reason}${then ? `\nnow on ${then}` : ''}`)
+      dropClosing(target)
+      act.log('close', { ticket: target, reason })
+      console.log(`closed ${target}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
     break
