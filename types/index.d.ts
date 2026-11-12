@@ -135,4 +135,8 @@ export type Board = {
   look?(id: string): { id: string; title: string | null; status: string | null } | null | Promise<{ id: string; title: string | null; status: string | null } | null>
   /** The work queue: set the task's queue labels (`queued`, `lane:*`, `pin:*`) to `labels`; [] clears them. */
   queue?(id: string, labels: string[]): unknown
+  /** Tasks that wait on a person (config statuses.waiting): `peers waiting`, the view's Needs you. [] when unset. */
+  waiting?(): { id: string; title: string | null }[] | Promise<{ id: string; title: string | null }[]>
+  /** The board's status names (GitHub: labels): doctor checks config statuses against them. null: cannot list. */
+  names?(): string[] | null | Promise<string[] | null>
 }

@@ -8,7 +8,7 @@ import { homedir, hostname, userInfo } from 'node:os'
 import { basename, join } from 'node:path'
 import { actions } from '../lib/actions.mjs'
 import { CLAIMS, compact, holding, isLive, joinEntry, nameOf, overlay } from '../lib/core.mjs'
-import { boardOf } from '../lib/board.mjs'
+import { boardOf, statusesOf } from '../lib/board.mjs'
 import { awayLines, claimsOf, fromLedgers, heldLines, holderName, holdersOf, plan, whoOf } from '../lib/claims.mjs'
 import { claimsSync, configSync, namesSync, runningSync, statusSync } from '../lib/io.mjs'
 import { LANE, deliveryId, labelsOf, pick, place, queueLines, quiet, same as sameTask } from '../lib/queue.mjs'
@@ -19,11 +19,12 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
 by itself when idle and holding none (the peers mod submits it); next takes one now.
+waiting: the board's tasks that wait on a person (config statuses.waiting); --write keeps them for the view.
 sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
@@ -88,7 +89,7 @@ if (cmd === 'recall') {
 }
 
 // The work queue needs no repo: the mod runs `peers next` from any folder.
-const NO_REPO = new Set(['queue', 'serve', 'next'])
+const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting'])
 const root = (() => {
   try {
     return slash(git(['rev-parse', '--show-toplevel']).trim(), winOf(homedir()))
@@ -872,6 +873,15 @@ switch (cmd) {
     for (const n of notes) process.stderr.write(`peers: ${n}\n`)
     break
   }
+  case 'waiting': {
+    // No waiting name, or a board without waiting(): an empty list, never an error.
+    const items = board.waiting ? await tryBoard('waiting', () => board.waiting()) : []
+    if (items === null) process.exit(1)
+    if (argv.includes('--write')) Q.setWaiting({ at: Date.now(), status: statusesOf(config).waiting, items })
+    if (argv.includes('--json')) console.log(JSON.stringify(items))
+    else if (!argv.includes('--write')) console.log(items.length ? items.map(t => `${t.id} - ${t.title ?? ''}`).join('\n') : 'nothing waits on a person')
+    break
+  }
   case 'held': {
     const held = await heldNow()
     console.log(held.length ? held.join('\n') : 'no session holds a task')
@@ -1016,12 +1026,13 @@ switch (cmd) {
         if (live.length > 1) die(`peers queue add: ${live.length} running sessions are named "${pin}"; /rename one first`)
         if (!live.length) process.stderr.write(`peers queue add: no running session is named "${pin}"; the item waits for it\n`)
       }
-      // Board reads before the lock: each task exists and is To Do.
+      // Board reads before the lock: each task exists and is ready (To Do by default).
+      const READY = statusesOf(config).ready
       const looked = []
       for (const id of ids) {
         const t = board.look ? await tryBoard('queue', () => board.look(id)) : { id, title: null, status: null }
         if (board.look && !t) die(`peers queue add: ${id} not found on the board; nothing queued`)
-        if (t.status && !/^to ?do$/i.test(t.status)) die(`peers queue add: ${t.id} is ${t.status}, not To Do; nothing queued`)
+        if (t.status && t.status.toLowerCase() !== READY.toLowerCase()) die(`peers queue add: ${t.id} is ${t.status}, not ${READY}; nothing queued`)
         looked.push(t)
       }
       const added = await withLock(30_000, 'queue', async () => {
