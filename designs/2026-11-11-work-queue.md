@@ -181,3 +181,4 @@ On add: labels `queued`, `lane:<L>`, and `pin:<name>` when pinned. On take: the 
   - The pure rules are in `lib/queue.mjs` (the mod imports it), the files in `lib/queue-files.mjs`.
   - An `also` task keeps its own `queued` (`spread` carries it), so `unclaim` and the sweep put back the right item.
   - Proof: `scripts/smoke-queue.sh` (28 checks: lanes, pins, quiet gate, a race of two takers, told, hand claim and unclaim, a dead holder) and `lib/queue.test.mjs`.
+- 2026-11-11: live proof found the session file says `shell`, not `idle`, while a background shell runs. Every session runs the devboard listener, so no session was ever quiet. `quiet` takes `shell` too (0.37.3). `deliver()` writes its last 20 stop reasons to `peers-run/deliver-<session>.json`.
