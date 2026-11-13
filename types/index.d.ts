@@ -142,3 +142,52 @@ export type Board = {
   /** The board's status names (GitHub: labels): doctor checks config statuses against them. null: cannot list. */
   names?(): string[] | null | Promise<string[] | null>
 }
+
+// Coordination port (Aerie phase 3, WA-1369): holders, leases, closing records, queue, fencing. Default store: lib/coord-files.mjs;
+// Aerie's Postgres store the other. Both pass coordContract (lib/coord.contract.mjs). Every call settles in ≤ 2 s or rejects.
+/** `<who>/<session name>`; who = the machine */
+export type CoordHolder = string
+export type CoordLease = { holder: CoordHolder; gen: number; expires: number; queued?: { lane: string | null; pin: string | null } }
+export type CoordHeld = {
+  id: string
+  title: string | null
+  /** lapsed leases too, until released */
+  holders: CoordLease[]
+  updated: number | null
+  closing: { holder: CoordHolder; reason: string; at: number }[]
+}
+export type CoordQueueItem = { id: string; lane: string | null; pin: string | null; pos: number }
+export type CoordStore = {
+  name: string
+  /** true: the store sets the task's status in the claim/release transaction; false: peers calls the board after */
+  ownsStatus: boolean
+  /** new lease; `gen` > every earlier gen of this id; a re-claim by the same holder fences out its old gen */
+  claim(id: string, holder: CoordHolder, leaseMs: number): Promise<{ gen: number; others: CoordHolder[]; title: string | null }>
+  /** extends each live lease of these holders; a lapsed one is released (last-holder rule) and listed in `lost` */
+  renew(holders: CoordHolder[], leaseMs: number): Promise<{ lost: { id: string; holder: CoordHolder }[] }>
+  /**
+   * drops this holder's lease (absent: no-op) and the `expire` holders' leases. done: keeps a closing record.
+   * Last out: closing record → done (closeNow); else queue → back at the queue head (lane/pin from the dropped lease); else ready.
+   * Records go when the task settles.
+   */
+  release(
+    id: string,
+    holder: CoordHolder,
+    o?: { done?: { reason: string }; queue?: boolean; expire?: CoordHolder[] },
+  ): Promise<{ last: boolean; closeNow: boolean; status: 'doing' | 'done' | 'queued' | 'ready' }>
+  held(): Promise<CoordHeld[]>
+  /** an id already queued moves; default `at`: end */
+  queueAdd(ids: string[], o?: { lane?: string; pin?: string; at?: 'top' | 'end' | { after: string } }): Promise<void>
+  queueRemove(ids: string[]): Promise<void>
+  /** in order; pos 0..n-1 */
+  queueList(): Promise<CoordQueueItem[]>
+  /**
+   * the first item in queue order this holder may take (lib/queue.mjs mayTake): pinned → only to `pin` (the session's
+   * /rename name), any lane; unpinned → a lane in `lanes` ('*': all). Taken and claimed atomically.
+   * `told` (the mod's prompt entered) stays in the local claim file.
+   */
+  queueTake(o: { lanes: string[] | '*'; pin?: string | null }, holder: CoordHolder, leaseMs: number): Promise<{ id: string; gen: number } | null>
+  /** true while `holder` holds `id` at `gen` and the lease has not lapsed */
+  fence(id: string, holder: CoordHolder, gen: number): Promise<boolean>
+  end?(): Promise<void>
+}

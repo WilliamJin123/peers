@@ -213,6 +213,8 @@ Jira links commits, branches and PRs that name an issue key, once your Jira site
 
 `check` in the config sets what `peers check` runs, as a shell line at the repo root (`"check": "npm test"`). Without it: `scripts/gates.sh changed` through bash, else the package's `gates` script (`pnpm -s gates`, the whole repo). The command gets this session's files in `PEERS_FILES`, a line each; a gate that reads it checks only those files and their packages. A failure is matched to its file (`path:12:3`, `path(12,3)`): when every failing file is a peer's uncommitted file, the check passes and names them. A failure with no file, in your file or in committed code fails. A break that needs both sessions' work shows only in CI.
 
+The coordination port (0.44.0, `CoordStore` in `types/index.d.ts`) holds who holds a task, their leases, the closing records, the queue and the fence gen. `lib/coord-files.mjs` is the file store; Aerie's Postgres store is the other. Each store runs `coordContract({ name, make: ns => store })` from `lib/coord.contract.mjs`; `make` with the same `ns` gives a second handle on the same backing. `lib/coord-files.test.mjs` runs it on the file store, plus eight processes racing for three queued items. The CLI does not call the port yet: the switch goes through the WA-1367 gate.
+
 Why adapters in JS: the other choice was shell command lines in the config (no code, but fragile quoting, worst on Windows). Jira has two because work laptops differ: acli reuses the login you already have; REST needs nothing installed.
 
 ## Limits

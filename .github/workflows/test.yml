@@ -20,6 +20,7 @@ jobs:
       - run: node lib/board.contract.test.mjs
       - run: node lib/claims.test.mjs
       - run: node lib/queue.test.mjs
+      - run: node lib/coord-files.test.mjs
       - run: node lib/actions.test.mjs
       - run: node lib/view.test.mjs
       - run: node lib/platform.test.mjs
