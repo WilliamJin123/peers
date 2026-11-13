@@ -55,6 +55,9 @@ check 'second holder: marks' "$(who TASK-1)" 'In Progress|@peers:m1/cc-aaaa,@pee
 check 'close hands off to the peer' "$(A r2 close -r part 2>&1 | grep -c 'cc-bbbb still on it')" '1'
 check 'hand-off: only the peer is marked' "$(who TASK-1)" 'In Progress|@peers:m1/cc-bbbb'
 check 'hand-off: held says who is done' "$(B r1 held | grep -c 'TASK-1  done: cc-aaaa')" '1'
+check 'notes: the last holder is told' "$(B r1 notes | grep -c '^peers: cc-aaaa closed its part of TASK-1 (part .*You are the last holder: `peers close TASK-1`')" '1'
+check 'notes: keyed for the told set' "$(B r1 notes --json | grep -c '"key":"TASK-1:aaaa1111-0:')" '1'
+check 'notes: none for the closer' "$(A r1 notes)" 'no notes'
 A r2 claim TASK-1 >/dev/null
 
 # B's session ends; its claim is 3 h old. The sweep drops its mark and deletes the dead claim.

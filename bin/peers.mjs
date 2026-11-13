@@ -19,7 +19,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | notes [--json] | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
@@ -89,7 +89,7 @@ if (cmd === 'recall') {
 }
 
 // The work queue needs no repo: the mod runs `peers next` from any folder.
-const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting'])
+const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting', 'notes'])
 const root = (() => {
   try {
     return slash(git(['rev-parse', '--show-toplevel']).trim(), winOf(homedir()))
@@ -885,6 +885,23 @@ switch (cmd) {
   case 'held': {
     const held = await heldNow()
     console.log(held.length ? held.join('\n') : 'no session holds a task')
+    break
+  }
+  // A co-holder closed its part of a task this session holds (WA-1358): one note per closing entry, keyed for the mod's told set.
+  case 'notes': {
+    const me = readClaim(session)
+    const mine = [me?.ticket, ...(me?.also ?? []).map(a => a.ticket)].filter(Boolean)
+    const names = namesSync(homedir())
+    const out = []
+    for (const t of mine)
+      for (const x of readClosing(t).filter(x => x.session !== session)) {
+        const rest = holders(t).filter(c => !readClosing(t).some(y => y.session === c.session)).map(c => holderName(c, names))
+        out.push({
+          key: `${t}:${x.session}:${x.at}`,
+          text: `peers: ${x.name ?? x.session.slice(0, 8)} closed its part of ${t} (${x.reason}). ${rest.length ? `${rest.join(', ')} and you still hold it; it goes Done when the last holder closes.` : `You are the last holder: \`peers close ${t}\` when your part is done, and it goes Done.`}`,
+        })
+      }
+    console.log(asJson ? JSON.stringify(out) : out.map(x => x.text).join('\n') || 'no notes')
     break
   }
   case 'sweep': {

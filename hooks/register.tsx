@@ -230,6 +230,29 @@ const readJ = async ($: any, p: string) => {
 }
 const peersCli = ($: any, args: string[]) =>
   $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, ...args], { timeoutMs: 15000, cwd: home, env: { PEERS_SESSION: session } })
+// A co-holder closed its part of a task this session holds (WA-1358): one note each, once. Reads two small files at
+// most every 30 s; the CLI (`peers notes`) runs only when an untold entry is there. Told keys live in $.store.
+let notesAt = 0
+const closeNotes = async ($: any): Promise<string[]> => {
+  const now = await $.clock.now()
+  if (!session || !home || now - notesAt < 30_000) return []
+  notesAt = now
+  const dir = `${home}/.claude/peers-claims`
+  const claim = await readJ($, `${dir}/${session}.json`)
+  const held = [claim?.ticket, ...(claim?.also ?? []).map((a: any) => a.ticket)].filter(Boolean)
+  if (!held.length) return []
+  const key = `closeTold:${session}`
+  const told: string[] = ((await $.store.get(key)) as string[] | undefined) ?? []
+  let fresh = false
+  for (const t of held)
+    for (const x of (await readJ($, `${dir}/closing/${encodeURIComponent(t)}.json`)) ?? [])
+      if (x.session !== session && !told.includes(`${t}:${x.session}:${x.at}`)) fresh = true
+  if (!fresh) return []
+  const r = await peersCli($, ['notes', '--json'])
+  const notes = (JSON.parse(String(r.stdout ?? '').trim().split('\n').pop() || '[]') as { key: string; text: string }[]).filter(n => !told.includes(n.key))
+  if (notes.length) await $.store.set(key, [...told, ...notes.map(n => n.key)].slice(-200))
+  return notes.map(n => n.text)
+}
 // Why wakes stopped: peers-run/deliver-<session>.json, the last 20 changes, each with its count.
 const stops: { why: string; at: number; n: number }[] = []
 const stopAt = async ($: any, why: string) => {
@@ -681,6 +704,14 @@ export const register: Register = on => {
       return withContext(abs, withContext('', r, warn), line)
     }).catch(($, e, next) => next(e))
   }
+
+  // Any tool: the model reads a co-holder's close after the result.
+  on('tool.call', async ($, e, next) => {
+    const r: any = await next(e)
+    if (!r || r.deny !== undefined) return r
+    const notes = await closeNotes($).catch(() => [] as string[])
+    return notes.length ? { ...r, context: [...(r.context ?? []), ...notes] } : r
+  }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const abs = await absolute($, e.file_path)
