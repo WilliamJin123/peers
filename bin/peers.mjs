@@ -1117,7 +1117,7 @@ switch (cmd) {
       break
     }
     const auto = argv.includes('--auto')
-    const say = v => console.log(asJson ? JSON.stringify(v) : v ? `now on ${v.item.task}${v.item.title ? `: ${v.item.title}` : ''} (lane ${v.item.lane}). Read it: backlog task view ${v.item.task} --plain` : 'nothing in the work queue for this session')
+    const say = v => console.log(asJson ? JSON.stringify(v) : v ? `now on ${v.item.task}${v.item.title ? `: ${v.item.title}` : ''} (lane ${v.item.lane}). Read it: ${v.view}` : 'nothing in the work queue for this session')
     if (auto && !quiet(statusSync(homedir()).get(session), Date.now(), (Number.isFinite(Number(config.queueQuietSec)) && config.queueQuietSec !== null ? Number(config.queueQuietSec) : 60) * 1000)) {
       say(null)
       break
@@ -1149,7 +1149,8 @@ switch (cmd) {
       await label(got.item.task, [])
       act.log('claim', { ticket: got.item.task, title: got.item.title ?? null, queued: got.id })
     }
-    say(got)
+    // the board says how to read the task: the mod's prompt (promptOf) and this line print it
+    say(got && { ...got, view: board.viewHint(got.item.task) })
     break
   }
   case 'log': {

@@ -122,6 +122,8 @@ export type Board = {
   /** Unchecked items: close waits for them. Default []. */
   open?(id: string): string[] | Promise<string[]>
   openHint?(id: string): string
+  /** How a session reads the task's text: a command or a pointer. Queue prompts and `peers next` print it. */
+  viewHint?(id: string): string
   /** Column rules (config `lint`): one line per rule that tasks break. `peers sweep` prints them. Optional. */
   lint?(rules: { status: string; needs: string }[]): string[] | Promise<string[]>
   /** Who else holds it: other machines, other people. Default []. */

@@ -40,6 +40,7 @@ check 'add: --pin with an id is refused' "$(as aaaa1111-0 queue add TASK-7 --pin
 as aaaa1111-0 serve sop >/dev/null
 as bbbb2222-0 serve ui >/dev/null
 check 'next --auto: nothing for a session that does not serve' "$(as cccc3333-0 next --auto --json | field item.task)" 'TASK-4'
+check 'next --json: the board view hint' "$(as cccc3333-0 next --json 2>/dev/null | field view)" 'backlog task view TASK-4 --plain'
 check 'pin: reaches its session without serve; others skip it' "$(order)" 'TASK-5 TASK-1 TASK-2 TASK-3'
 up aaaa1111-0 'sop dev' busy
 check 'next --auto: a busy session gets nothing' "$(as aaaa1111-0 next --auto --json)" 'null'
