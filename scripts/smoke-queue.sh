@@ -94,8 +94,13 @@ check 'rm: queue empty, labels off' "$(order)|$(task TASK-7)" '|To Do|'
 # PEERS_COORD set (scripts/smoke-coord-shadow.sh): the shadow store ends level with the files, and its rules agreed.
 if [ -n "${PEERS_COORD:-}" ]; then
   flushed() { for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do r=$(as aaaa1111-0 coord flush); [ "$r" != busy ] && break; sleep 0.5; done; echo "$r"; }
+  # an aerie runner row (pin run:<runner>) lives only in the store: the shadow neither diffs nor removes it
+  shadowStore() { (cd "$T/none" && node --input-type=module -e "import { coordShadow } from '$(dirname "$peers")/../lib/coord-shadow.mjs'; const st = await coordShadow({ home: process.env.HOME, config: {}, who: 'm1' }).store(); try { $1 } finally { await st.end?.() }"); }
+  shadowStore "await st.queueAdd(['RUN-1'], { pin: 'run:claude' })"
   flushed >/dev/null; flushed >/dev/null
   check 'coord shadow: level with the files' "$(flushed | sed 's/^ok: [0-9]* ops, //')" '0 diffs'
+  check 'coord shadow: a run: row stays in the store' "$(shadowStore "console.log((await st.queueList()).filter(i => i.pin === 'run:claude').map(i => i.id).join())")" 'RUN-1'
+  shadowStore "await st.queueRemove(['RUN-1'])"
   check 'coord shadow: takes and releases agree' "$(cat "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | grep -c '"kind":"take"\|"kind":"release"\|"kind":"lost"')" '0'
   grep -h '"kind":"take"\|"kind":"release"\|"kind":"lost"\|fixed' "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | sed 's/^/  diff /'
   echo "info coord shadow: $(cat "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | grep -c fixed) diffs fixed on the way"
