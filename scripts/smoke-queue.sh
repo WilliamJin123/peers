@@ -95,7 +95,7 @@ check 'rm: queue empty, labels off' "$(order)|$(task TASK-7)" '|To Do|'
 if [ -n "${PEERS_COORD:-}" ]; then
   flushed() { for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do r=$(as aaaa1111-0 coord flush); [ "$r" != busy ] && break; sleep 0.5; done; echo "$r"; }
   # an aerie runner row (pin run:<runner>) lives only in the store: the shadow neither diffs nor removes it
-  shadowStore() { (cd "$T/none" && node --input-type=module -e "import { coordShadow } from '$(dirname "$peers")/../lib/coord-shadow.mjs'; const st = await coordShadow({ home: process.env.HOME, config: {}, who: 'm1' }).store(); try { $1 } finally { await st.end?.() }"); }
+  shadowStore() { (cd "$T/none" && node --input-type=module -e "import { coordSync } from '$(dirname "$peers")/../lib/coord-sync.mjs'; const st = await coordSync({ home: process.env.HOME, config: {}, who: 'm1' }).store(); try { $1 } finally { await st.end?.() }"); }
   shadowStore "await st.queueAdd(['RUN-1'], { pin: 'run:claude' })"
   flushed >/dev/null; flushed >/dev/null
   check 'coord shadow: level with the files' "$(flushed | sed 's/^ok: [0-9]* ops, //')" '0 diffs'

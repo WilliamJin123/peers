@@ -15,7 +15,7 @@ import { LANE, deliveryId, labelsOf, pick, place, queueLines, quiet, same as sam
 import { store } from '../lib/queue-files.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
-import { coordShadow } from '../lib/coord-shadow.mjs'
+import { coordSync } from '../lib/coord-sync.mjs'
 import { fileURLToPath } from 'node:url'
 import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/lines.mjs'
 
@@ -330,19 +330,45 @@ const requeue = items => {
   Q.write(q)
 }
 const label = (id, labels) => board.queue && board.on() && act.send('queue', [id, labels], send)
-// Shadow coord store (lib/coord-shadow.mjs): an op file per change, a detached flush applies it. Off without config `coord`.
-const shadow = coordShadow({ home: homedir(), config, who })
-const shadowOp = op => {
-  if (!shadow) return
-  shadow.put(op)
-  shadow.kick(fileURLToPath(import.meta.url))
-  const w = shadow.warn()
+// The coord store (lib/coord-sync.mjs), off without config `coord`. Each holder or queue change: through mode calls the
+// store now (under the board lock); else, or store down, an op file and a detached flush. The store's answer, or undefined.
+const coord = coordSync({ home: homedir(), config, who })
+const coordOp = async op => {
+  if (!coord) return undefined
+  const r = await coord.send(op)
+  if (r !== undefined) return r
+  coord.put(op)
+  coord.kick(fileURLToPath(import.meta.url))
+  const w = coord.warn()
   if (w) process.stderr.write(`${w}\n`)
+  return undefined
 }
 const holderOf = c => `${who}/${holderName(c, namesSync(homedir()))}`
-const coordTruth = () => {
-  const [now, running, names] = now3()
-  return { live: claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who).live, queue: Q.read() }
+// The files' side of the flush and the listener.
+const coordFiles = {
+  locked: f => withLock(5_000, null, f),
+  truth: () => {
+    const [now, running, names] = now3()
+    return { live: claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who).live, queue: Q.read() }
+  },
+  // the store's rows, in its order; an item the file had keeps its title, by and at (its delivery id)
+  writeQueue: rows => {
+    const was = Q.read()
+    Q.write(
+      rows.map(r => {
+        const f = was.find(i => sameTask(i.task, r.id))
+        return { by: null, at: Date.now(), ...f, task: f?.task ?? r.id, title: f?.title ?? r.title ?? null, lane: r.lane ?? LANE, pin: r.pin ?? null }
+      }),
+    )
+  },
+  // the store let this holder go (through mode): its claim on id goes too
+  drop: (id, holder) => {
+    const c = claimsSync(homedir()).find(c => holderOf(c) === holder)
+    const me = c && readClaim(c.session)
+    if (!me) return
+    if (sameTask(me.ticket, id)) nextClaim(me)
+    else if ((me.also ?? []).some(a => sameTask(a.ticket, id))) writeClaim({ ...me, updated: Date.now(), also: me.also.filter(a => !sameTask(a.ticket, id)) })
+  },
 }
 // The board lock: a claim (claim file, then board), a close (board, then claim file) and each sweep run one at a time
 // on this machine. Without it a sweep that read the claims before a claim landed sends the claimed task back to To Do.
@@ -505,7 +531,7 @@ const sweep = async () => {
         if (failed.has(c.ticket) || file?.claimed !== c.claimed) continue
         back.push(...queuedOf(file).map(q => q.item))
         dropClaim(c.session)
-        shadowOp({ op: 'release', id: c.ticket, holder: holderOf(c), o: { queue: true } })
+        await coordOp({ op: 'release', id: c.ticket, holder: holderOf(c), o: { queue: true } })
       }
       if (back.length) {
         requeue(back)
@@ -988,6 +1014,8 @@ switch (cmd) {
       writeClaim(c)
       const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who)
       const all = live.get(id) ?? [`${who}/${c.name}`]
+      // the store before the board: a flush never sees this claim in the files without its op
+      await coordOp({ op: 'claim', id, holder: `${who}/${c.name}` })
       let got
       try {
         got = await board.claim(id, all)
@@ -995,12 +1023,12 @@ switch (cmd) {
         // The board said no: the claim before it stands.
         if (was) writeClaim(was)
         else dropClaim(session)
+        if (!same(was?.ticket ?? '') && !(was?.also ?? []).some(a => same(a.ticket))) await coordOp({ op: 'release', id, holder: `${who}/${c.name}`, o: { queue: !!item } })
         die(`peers claim: ${id} not claimed: ${e.message}`)
       }
       // The title travels in the claim: the views show it without asking the board.
       // got.id: the board's spelling of the id, where the board gives it
       writeClaim({ ...c, ticket: got?.id ?? id, title: got?.title ?? null, updated: Date.now() })
-      shadowOp({ op: 'claim', id: got?.id ?? id, holder: `${who}/${c.name}` })
       if (item) label(id, [])
       unClosing(id, session)
       act.log('claim', { ticket: id, title: got?.title ?? null })
@@ -1021,7 +1049,7 @@ switch (cmd) {
       if (q?.item) requeue([q.item])
       const then = same(me.ticket) ? nextClaim(me) : (writeClaim({ ...me, updated: Date.now(), also: me.also.filter(a => !same(a.ticket)) }), me.ticket)
       act.log('unclaim', { ticket: id })
-      shadowOp({ op: 'release', id, holder: holderOf(me), o: { queue: !!q?.item } })
+      await coordOp({ op: 'release', id, holder: holderOf(me), o: { queue: !!q?.item } })
       if (q?.item) label(q.item.task, labelsOf(q.item))
       console.log(`let go of ${id}${q?.item ? ' (back at the head of the work queue)' : ''}${then ? `; now on ${then}` : ''}`)
     })
@@ -1072,7 +1100,7 @@ switch (cmd) {
         if (board.hold) await tryBoard('close', () => board.hold(target, live.get(target) ?? []))
         await tryBoard('close', () => board.note(target, `${me.name ?? nameOf_(me)} done: ${reason}`))
         act.log('close', { ticket: target, reason, waits: who_ })
-        shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason } }, expect: 'doing' })
+        await coordOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason } }, expect: 'doing' })
         console.log(`done with ${target}: ${reason}\n${who_} still on it; it goes Done when the last one closes.${then ? `\nnow on ${then}` : ''}`)
         return
       }
@@ -1086,7 +1114,7 @@ switch (cmd) {
       dropClosing(target)
       act.log('close', { ticket: target, reason })
       // board.close drops every mark, other machines' too: the store frees them the same way
-      shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason }, ...(away.length ? { expire: away } : {}) }, ...(force ? {} : { expect: 'done' }) })
+      await coordOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason }, ...(away.length ? { expire: away } : {}) }, ...(force ? {} : { expect: 'done' }) })
       console.log(`closed ${target}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
@@ -1139,10 +1167,10 @@ switch (cmd) {
           out.push(item)
         }
         Q.write(items)
+        const top = argv.includes('--top'), after0 = opt('--after')
+        await coordOp({ op: 'queueAdd', ids: out.map(i => i.task), o: { lane, ...(pin ? { pin } : {}), at: top ? 'top' : after0 ? { after: after0 } : 'end' } })
         return out
       })
-      const top = argv.includes('--top'), after0 = opt('--after')
-      shadowOp({ op: 'queueAdd', ids: added.map(i => i.task), o: { lane, ...(pin ? { pin } : {}), at: top ? 'top' : after0 ? { after: after0 } : 'end' } })
       for (const i of added) await label(i.task, labelsOf(i))
       console.log(`queued ${added.map(i => i.task).join(', ')} [${lane}]${pin ? ` for ${pin}` : ''}\n${queueLines(Q.read(), Q.serving(), names, running).join('\n')}`)
       break
@@ -1153,9 +1181,9 @@ switch (cmd) {
         const items = Q.read()
         const out = items.filter(i => ids.some(id => sameTask(i.task, id)))
         Q.write(items.filter(i => !out.includes(i)))
+        if (out.length) await coordOp({ op: 'queueRemove', ids: out.map(i => i.task) })
         return out
       })
-      if (gone.length) shadowOp({ op: 'queueRemove', ids: gone.map(i => i.task) })
       for (const i of gone) await label(i.task, [])
       console.log(gone.length ? `out of the work queue: ${gone.map(i => i.task).join(', ')}` : 'none of those is queued')
       break
@@ -1193,7 +1221,20 @@ switch (cmd) {
       if (me && auto) return null
       const names = namesSync(homedir())
       const items = Q.read()
-      const item = pick(items, names.get(session) ?? null, Q.lanes(session))
+      let item = pick(items, names.get(session) ?? null, Q.lanes(session))
+      const holder = `${who}/${holderName({ session, agent: l.agent }, names)}`
+      const take = { op: 'take', id: item?.task ?? null, holder, lanes: Q.lanes(session) ?? [], pin: names.get(session) ?? null }
+      if (coord?.through) {
+        // the store picks (one winner across machines); the files follow its answer. undefined: down, the files pick.
+        take.key = coord.key()
+        const r = await coord.send(take)
+        if (r === null) return null
+        if (r) {
+          const row = r.row ?? { id: r.id, lane: null, pin: null, title: null }
+          item = items.find(i => sameTask(i.task, r.id)) ?? { task: r.id, title: row.title ?? null, lane: row.lane ?? LANE, pin: row.pin ?? null, by: null, at: Date.now() }
+          take.done = true
+        }
+      }
       if (!item) return null
       const now = Date.now()
       const queued = { item, id: deliveryId(item), told: !auto }
@@ -1202,7 +1243,7 @@ switch (cmd) {
       c.name = holderName(c, names)
       writeClaim(c)
       Q.write(items.filter(i => i !== item))
-      shadowOp({ op: 'take', id: item.task, holder: `${who}/${c.name}`, lanes: Q.lanes(session) ?? [], pin: names.get(session) ?? null })
+      if (!take.done) await coordOp({ ...take, id: item.task, holder: `${who}/${c.name}` })
       const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, runningSync(homedir(), true), names, who)
       holders = live.get(item.task) ?? [`${who}/${c.name}`]
       return queued
@@ -1217,21 +1258,35 @@ switch (cmd) {
     say(got && { ...got, view: board.viewHint(got.item.task) })
     break
   }
-  // The shadow coord store (WA-1370): `peers coord` its health and last diffs; flush (detached, from commands and the mod).
+  // The coord store (WA-1370, WA-1367.1): `peers coord` its mode, health and last diffs; flush and listen run detached
+  // (kick, from commands and the mod).
   case 'coord': {
-    if (!shadow) {
+    if (!coord) {
       console.log('no coord store: set "coord" in ~/.claude/peers/config.json ("files", or a store module path)')
       break
     }
     if (argv[1] === 'flush') {
-      console.log(await shadow.flush(coordTruth))
+      console.log(await coord.flush(coordFiles))
+      break
+    }
+    if (argv[1] === 'listen') {
+      const vf = join(fileURLToPath(new URL('..', import.meta.url)), '.claude-plugin', 'plugin.json')
+      const ver = () => {
+        try {
+          return JSON.parse(readFileSync(vf, 'utf8')).version
+        } catch {
+          return null
+        }
+      }
+      const at = ver()
+      console.log(await coord.listen({ files: coordFiles, changed: () => ver() !== at, running: () => (runningSync(homedir(), true)?.size ?? 0) > 0 }))
       break
     }
     if (argv[1] === 'kick') {
-      shadow.kick(fileURLToPath(import.meta.url))
+      coord.kick(fileURLToPath(import.meta.url))
       break
     }
-    const st = shadow.status()
+    const st = coord.status()
     const last = (() => {
       try {
         return readFileSync(st.diffs, 'utf8').trim().split('\n').slice(-10)
@@ -1240,7 +1295,7 @@ switch (cmd) {
       }
     })()
     if (asJson) console.log(JSON.stringify({ ...st, last: last.map(l => JSON.parse(l)) }))
-    else console.log(`store ${st.store}: ${st.health ? (st.health.ok ? `ok, ${st.health.diffs} diffs, ${st.health.ms} ms` : `failing: ${st.health.error}`) + `, ${Math.round((Date.now() - st.health.at) / 1000)} s ago` : 'no flush yet'}; ${st.pending} op(s) waiting\n${last.length ? `last diffs (${st.diffs}):\n${last.join('\n')}` : 'no diffs'}`)
+    else console.log(`store ${st.store} (${st.mode}${st.listener === null ? '' : st.listener ? ', listening' : ', no listener'}): ${st.health ? (st.health.ok ? `ok, ${st.health.diffs} diffs, ${st.health.ms} ms` : `failing: ${st.health.error}`) + `, ${Math.round((Date.now() - st.health.at) / 1000)} s ago` : 'no flush yet'}; ${st.pending} op(s) waiting\n${last.length ? `last diffs (${st.diffs}):\n${last.join('\n')}` : 'no diffs'}`)
     break
   }
   case 'log': {
@@ -1254,8 +1309,8 @@ switch (cmd) {
       const what =
         a.op === 'send' ? null
         : a.op === 'sent' ? `${s?.call ?? 'send'} ${s?.args?.[0] ?? ''} ${a.ok ? 'sent' : `failed: ${a.err}`}`
-        : a.op === 'commit' ? `commit ${a.sha.slice(0, 7)} ${a.t ?? ''}${a.ticket ? ` (${a.ticket})` : ''}`
-        : a.op === 'check' ? `check ${a.sha.slice(0, 7)} ${a.status === 0 ? 'passed' : `failed (${a.status})`}`
+        : a.op === 'commit' ? `commit ${a.sha?.slice(0, 7) ?? '?'} ${a.t ?? ''}${a.ticket ? ` (${a.ticket})` : ''}`
+        : a.op === 'check' ? `check ${a.sha?.slice(0, 7) ?? '(no commit)'} ${a.status === 0 ? 'passed' : `failed (${a.status})`}`
         : a.op === 'claim' ? `claim ${a.ticket}${a.title ? ` ${a.title}` : ''}`
         : a.op === 'close' ? `close ${a.ticket}: ${a.reason}${a.waits ? ` (done; waits on ${a.waits})` : ''}`
         : a.op === 'take' || a.op === 'drop' ? `${a.op} ${a.files.join(', ')}`

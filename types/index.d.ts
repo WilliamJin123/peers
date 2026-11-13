@@ -156,7 +156,10 @@ export type CoordHeld = {
   updated: number | null
   closing: { holder: CoordHolder; reason: string; at: number }[]
 }
-export type CoordQueueItem = { id: string; lane: string | null; pin: string | null; pos: number }
+/** title: the store's, where it holds the task (aerie); absent otherwise */
+export type CoordQueueItem = { id: string; lane: string | null; pin: string | null; pos: number; title?: string }
+/** what a store NOTIFY says changed */
+export type CoordChange = 'queue' | 'lease'
 export type CoordStore = {
   name: string
   /** true: the store sets the task's status in the claim/release transaction; false: peers calls the board after */
@@ -188,10 +191,13 @@ export type CoordStore = {
   /**
    * the first item in queue order this holder may take (lib/queue.mjs mayTake): pinned → only to `pin` (the session's
    * /rename name), any lane; unpinned → a lane in `lanes` ('*': all). Taken and claimed atomically.
-   * `told` (the mod's prompt entered) stays in the local claim file.
+   * `told` (the mod's prompt entered) stays in the local claim file. `key`: a replay with the same holder and key returns
+   * the lease that take made while it lives.
    */
-  queueTake(o: { lanes: string[] | '*'; pin?: string | null }, holder: CoordHolder, leaseMs: number): Promise<{ id: string; gen: number } | null>
+  queueTake(o: { lanes: string[] | '*'; pin?: string | null; key?: string }, holder: CoordHolder, leaseMs: number): Promise<{ id: string; gen: number } | null>
   /** true while `holder` holds `id` at `gen` and the lease has not lapsed */
   fence(id: string, holder: CoordHolder, gen: number): Promise<boolean>
+  /** a call per change (debounce: every renew sends `lease`); end() stops it */
+  listen?(onChange: (what: CoordChange) => void): Promise<{ end(): Promise<void> }>
   end?(): Promise<void>
 }
