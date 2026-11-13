@@ -1085,7 +1085,8 @@ switch (cmd) {
       const then = nextClaim(me)
       dropClosing(target)
       act.log('close', { ticket: target, reason })
-      shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason } }, ...(force ? {} : { expect: 'done' }) })
+      // board.close drops every mark, other machines' too: the store frees them the same way
+      shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason }, ...(away.length ? { expire: away } : {}) }, ...(force ? {} : { expect: 'done' }) })
       console.log(`closed ${target}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
