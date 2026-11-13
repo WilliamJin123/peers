@@ -161,13 +161,17 @@ export type CoordStore = {
   name: string
   /** true: the store sets the task's status in the claim/release transaction; false: peers calls the board after */
   ownsStatus: boolean
-  /** new lease; `gen` > every earlier gen of this id; a re-claim by the same holder fences out its old gen */
+  /**
+   * new lease; `gen` > every earlier gen of this id; a re-claim by the same holder fences out its old gen and keeps its
+   * `queued`. A queued id leaves the queue in the same step; the lease keeps its lane and pin.
+   */
   claim(id: string, holder: CoordHolder, leaseMs: number): Promise<{ gen: number; others: CoordHolder[]; title: string | null }>
   /** extends each live lease of these holders; a lapsed one is released (last-holder rule) and listed in `lost` */
   renew(holders: CoordHolder[], leaseMs: number): Promise<{ lost: { id: string; holder: CoordHolder }[] }>
   /**
    * drops this holder's lease (absent: no-op) and the `expire` holders' leases. done: keeps a closing record.
-   * Last out: closing record → done (closeNow); else queue → back at the queue head (lane/pin from the dropped lease); else ready.
+   * Last out: closing record → done (closeNow); else queue and a dropped lease came from the queue → back at the head with
+   * its lane and pin; else ready.
    * Records go when the task settles.
    */
   release(

@@ -15,11 +15,13 @@ import { LANE, deliveryId, labelsOf, pick, place, queueLines, quiet, same as sam
 import { store } from '../lib/queue-files.mjs'
 import { slash, winOf } from '../lib/path.mjs'
 import { platform } from '../lib/platform.mjs'
+import { coordShadow } from '../lib/coord-shadow.mjs'
+import { fileURLToPath } from 'node:url'
 import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/lines.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | notes [--json] | notice ["text" | rm <id>] | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | notes [--json] | notice ["text" | rm <id>] | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | coord [flush] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
@@ -89,7 +91,7 @@ if (cmd === 'recall') {
 }
 
 // The work queue needs no repo: the mod runs `peers next` from any folder.
-const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting', 'notes', 'notice'])
+const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting', 'notes', 'notice', 'coord'])
 const root = (() => {
   try {
     return slash(git(['rev-parse', '--show-toplevel']).trim(), winOf(homedir()))
@@ -328,6 +330,20 @@ const requeue = items => {
   Q.write(q)
 }
 const label = (id, labels) => board.queue && board.on() && act.send('queue', [id, labels], send)
+// Shadow coord store (lib/coord-shadow.mjs): an op file per change, a detached flush applies it. Off without config `coord`.
+const shadow = coordShadow({ home: homedir(), config, who })
+const shadowOp = op => {
+  if (!shadow) return
+  shadow.put(op)
+  shadow.kick(fileURLToPath(import.meta.url))
+  const w = shadow.warn()
+  if (w) process.stderr.write(`${w}\n`)
+}
+const holderOf = c => `${who}/${holderName(c, namesSync(homedir()))}`
+const coordTruth = () => {
+  const [now, running, names] = now3()
+  return { live: claimsOf(claimsSync(homedir()), allLedgers(), now, running, names, who).live, queue: Q.read() }
+}
 // The board lock: a claim (claim file, then board), a close (board, then claim file) and each sweep run one at a time
 // on this machine. Without it a sweep that read the claims before a claim landed sends the claimed task back to To Do.
 // mkdir is atomic. A holder that died (pid gone) loses it; a live one only after 10 min (a reused pid). Board calls
@@ -489,6 +505,7 @@ const sweep = async () => {
         if (failed.has(c.ticket) || file?.claimed !== c.claimed) continue
         back.push(...queuedOf(file).map(q => q.item))
         dropClaim(c.session)
+        shadowOp({ op: 'release', id: c.ticket, holder: holderOf(c), o: { queue: true } })
       }
       if (back.length) {
         requeue(back)
@@ -983,6 +1000,7 @@ switch (cmd) {
       // The title travels in the claim: the views show it without asking the board.
       // got.id: the board's spelling of the id, where the board gives it
       writeClaim({ ...c, ticket: got?.id ?? id, title: got?.title ?? null, updated: Date.now() })
+      shadowOp({ op: 'claim', id: got?.id ?? id, holder: `${who}/${c.name}` })
       if (item) label(id, [])
       unClosing(id, session)
       act.log('claim', { ticket: id, title: got?.title ?? null })
@@ -1003,6 +1021,7 @@ switch (cmd) {
       if (q?.item) requeue([q.item])
       const then = same(me.ticket) ? nextClaim(me) : (writeClaim({ ...me, updated: Date.now(), also: me.also.filter(a => !same(a.ticket)) }), me.ticket)
       act.log('unclaim', { ticket: id })
+      shadowOp({ op: 'release', id, holder: holderOf(me), o: { queue: !!q?.item } })
       if (q?.item) label(q.item.task, labelsOf(q.item))
       console.log(`let go of ${id}${q?.item ? ' (back at the head of the work queue)' : ''}${then ? `; now on ${then}` : ''}`)
     })
@@ -1053,6 +1072,7 @@ switch (cmd) {
         if (board.hold) await tryBoard('close', () => board.hold(target, live.get(target) ?? []))
         await tryBoard('close', () => board.note(target, `${me.name ?? nameOf_(me)} done: ${reason}`))
         act.log('close', { ticket: target, reason, waits: who_ })
+        shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason } }, expect: 'doing' })
         console.log(`done with ${target}: ${reason}\n${who_} still on it; it goes Done when the last one closes.${then ? `\nnow on ${then}` : ''}`)
         return
       }
@@ -1065,6 +1085,7 @@ switch (cmd) {
       const then = nextClaim(me)
       dropClosing(target)
       act.log('close', { ticket: target, reason })
+      shadowOp({ op: 'release', id: target, holder: holderOf(me), o: { done: { reason } }, ...(force ? {} : { expect: 'done' }) })
       console.log(`closed ${target}: ${reason}${then ? `\nnow on ${then}` : ''}`)
       if (away.length) process.stderr.write(`peers close: ${away.join(', ')} also had it (another machine or person); closed anyway.\n`)
     })
@@ -1119,6 +1140,8 @@ switch (cmd) {
         Q.write(items)
         return out
       })
+      const top = argv.includes('--top'), after0 = opt('--after')
+      shadowOp({ op: 'queueAdd', ids: added.map(i => i.task), o: { lane, ...(pin ? { pin } : {}), at: top ? 'top' : after0 ? { after: after0 } : 'end' } })
       for (const i of added) await label(i.task, labelsOf(i))
       console.log(`queued ${added.map(i => i.task).join(', ')} [${lane}]${pin ? ` for ${pin}` : ''}\n${queueLines(Q.read(), Q.serving(), names, running).join('\n')}`)
       break
@@ -1131,6 +1154,7 @@ switch (cmd) {
         Q.write(items.filter(i => !out.includes(i)))
         return out
       })
+      if (gone.length) shadowOp({ op: 'queueRemove', ids: gone.map(i => i.task) })
       for (const i of gone) await label(i.task, [])
       console.log(gone.length ? `out of the work queue: ${gone.map(i => i.task).join(', ')}` : 'none of those is queued')
       break
@@ -1177,6 +1201,7 @@ switch (cmd) {
       c.name = holderName(c, names)
       writeClaim(c)
       Q.write(items.filter(i => i !== item))
+      shadowOp({ op: 'take', id: item.task, holder: `${who}/${c.name}`, lanes: Q.lanes(session) ?? [], pin: names.get(session) ?? null })
       const { live } = claimsOf(claimsSync(homedir()), allLedgers(), now, runningSync(homedir(), true), names, who)
       holders = live.get(item.task) ?? [`${who}/${c.name}`]
       return queued
@@ -1189,6 +1214,32 @@ switch (cmd) {
     }
     // the board says how to read the task: the mod's prompt (promptOf) and this line print it
     say(got && { ...got, view: board.viewHint(got.item.task) })
+    break
+  }
+  // The shadow coord store (WA-1370): `peers coord` its health and last diffs; flush (detached, from commands and the mod).
+  case 'coord': {
+    if (!shadow) {
+      console.log('no coord store: set "coord" in ~/.claude/peers/config.json ("files", or a store module path)')
+      break
+    }
+    if (argv[1] === 'flush') {
+      console.log(await shadow.flush(coordTruth))
+      break
+    }
+    if (argv[1] === 'kick') {
+      shadow.kick(fileURLToPath(import.meta.url))
+      break
+    }
+    const st = shadow.status()
+    const last = (() => {
+      try {
+        return readFileSync(st.diffs, 'utf8').trim().split('\n').slice(-10)
+      } catch {
+        return []
+      }
+    })()
+    if (asJson) console.log(JSON.stringify({ ...st, last: last.map(l => JSON.parse(l)) }))
+    else console.log(`store ${st.store}: ${st.health ? (st.health.ok ? `ok, ${st.health.diffs} diffs, ${st.health.ms} ms` : `failing: ${st.health.error}`) + `, ${Math.round((Date.now() - st.health.at) / 1000)} s ago` : 'no flush yet'}; ${st.pending} op(s) waiting\n${last.length ? `last diffs (${st.diffs}):\n${last.join('\n')}` : 'no diffs'}`)
     break
   }
   case 'log': {

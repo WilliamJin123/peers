@@ -225,4 +225,13 @@ id=$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notice --json | node -e '
 check 'notice: keyed for the told set' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notes --json | grep -c "\"key\":\"notice:$id\"")" '1'
 check 'notice rm' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notice rm "$id")" 'removed 1'
 check 'notice: gone from notes' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notes)" 'no notes'
+# PEERS_COORD set (scripts/smoke-coord-shadow.sh): the shadow store ends level with the files, and its rules agreed.
+if [ -n "${PEERS_COORD:-}" ]; then
+  flushed() { for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do r=$(A r1 coord flush); [ "$r" != busy ] && break; sleep 0.5; done; echo "$r"; }
+  flushed >/dev/null; flushed >/dev/null
+  check 'coord shadow: level with the files' "$(flushed | sed 's/^ok: [0-9]* ops, //')" '0 diffs'
+  check 'coord shadow: takes and releases agree' "$(cat "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | grep -c '"kind":"take"\|"kind":"release"\|"kind":"lost"')" '0'
+  grep -h '"kind":"take"\|"kind":"release"\|"kind":"lost"\|fixed' "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | sed 's/^/  diff /'
+  echo "info coord shadow: $(cat "$HOME/.claude/peers-run/coord-diff.jsonl" 2>/dev/null | grep -c fixed) diffs fixed on the way"
+fi
 exit $fails

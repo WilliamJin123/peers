@@ -255,6 +255,16 @@ const closeNotes = async ($: any): Promise<string[]> => {
   if (notes.length) await $.store.set(key, [...told, ...notes.map(n => n.key)].slice(-200))
   return notes.map(n => n.text)
 }
+// Shadow coord store (WA-1370): renews this machine's leases through a detached flush, at most every 60 s, only when
+// config names a store. Lease ≥ 3× this.
+let coordAt = 0
+const coordKick = async ($: any) => {
+  const now = await $.clock.now()
+  if (!session || !home || now - coordAt < 60_000) return
+  coordAt = now
+  if (!(await readJ($, `${home}/.claude/peers/config.json`))?.coord) return
+  await peersCli($, ['coord', 'kick'])
+}
 // Why wakes stopped: peers-run/deliver-<session>.json, the last 20 changes, each with its count.
 const stops: { why: string; at: number; n: number }[] = []
 const stopAt = async ($: any, why: string) => {
@@ -427,7 +437,7 @@ export const register: Register = on => {
     // Fill the band now: a resumed session shows its peers before the first tick or turn.
     void refreshPeers($).catch(() => {})
     // Every 2 s with no stream, else every 30 s; the stream's events drive both band and pane.
-    $.clock.every(2000, () => (due('band') ? (void deliver($), refreshPeers($)) : undefined))
+    $.clock.every(2000, () => (due('band') ? (void deliver($), void coordKick($).catch(() => {}), refreshPeers($)) : undefined))
     void listen($)
     // immediate: it opens mid-turn, never queued behind the running turn.
     await $.command.register({ name: 'peers-view', description: "Open or close the live view of every session's edits", immediate: true })
