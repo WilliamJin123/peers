@@ -218,4 +218,11 @@ mkdir -p "$T/r0" && (cd "$T/r0" && git init -q && echo "a first line that is lon
 N r0 take a >/dev/null
 check 'commit in an empty repo: the root commit' "$(N r0 commit -m first 2>&1 | grep -c ' first (1 file)')" '1'
 check 'commit in an empty repo: no parent' "$(git -C "$T/r0" rev-list --parents -1 HEAD | wc -w | tr -d ' ')" '1'
+# notice: a broadcast every session sees in its notes, outside a repo too, keyed once per notice.
+check 'notice: sent' "$(cd "$T" && PEERS_SESSION=aaaa1111-0 node "$peers" notice the board moved to Aerie | grep -c '^notice n')" '1'
+check 'notice: a session with no task sees it' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notes | grep -c 'peers notice from .*: the board moved to Aerie')" '1'
+id=$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notice --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].id))')
+check 'notice: keyed for the told set' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notes --json | grep -c "\"key\":\"notice:$id\"")" '1'
+check 'notice rm' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notice rm "$id")" 'removed 1'
+check 'notice: gone from notes' "$(cd "$T" && PEERS_SESSION=cccc3333-0 node "$peers" notes)" 'no notes'
 exit $fails

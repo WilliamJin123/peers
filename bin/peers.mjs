@@ -19,7 +19,7 @@ import { applyHunks, delta, keys, owner, parseDiff, statusPaths } from '../lib/l
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
-const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | notes [--json] | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
+const usage = `peers status | diff [--who [file...]] | commit -m "msg" [--whole] [-- paths] | take <file...> | drop <file...> | check | ls | ready | held | notes [--json] | notice ["text" | rm <id>] | sweep | claim <task> | unclaim [task] | close [task] [-r reason] [--force] | queue [add <id...> [--lane L] [--pin name] [--top|--after id] | rm <id...>] | serve [lane...] [--off] | next | waiting [--json] [--write] | log [n] | files | view [--office] [match...] | tui [match...] | recall <words...> [--around uuid]
 Scope: the files this session edited (ledger kept by the peers mod). In a file a peer also edits, only your hunks
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
@@ -89,7 +89,7 @@ if (cmd === 'recall') {
 }
 
 // The work queue needs no repo: the mod runs `peers next` from any folder.
-const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting', 'notes'])
+const NO_REPO = new Set(['queue', 'serve', 'next', 'waiting', 'notes', 'notice'])
 const root = (() => {
   try {
     return slash(git(['rev-parse', '--show-toplevel']).trim(), winOf(homedir()))
@@ -272,6 +272,20 @@ const nextClaim = me => {
 }
 // A close while others hold the task: the session's part is done, the last holder out closes it.
 // `closing/<ticket>.json` = [{ session, name, reason, at }], written under the lock.
+const NOTICE_DAYS = 7
+const noticesPath = join(claimDir, 'notices.json')
+const readNotices = () => {
+  try {
+    return JSON.parse(readFileSync(noticesPath, 'utf8'))
+  } catch {
+    return []
+  }
+}
+const writeNotices = v => {
+  mkdirSync(claimDir, { recursive: true })
+  writeFileSync(`${noticesPath}.${process.pid}.tmp`, JSON.stringify(v))
+  renameSync(`${noticesPath}.${process.pid}.tmp`, noticesPath)
+}
 const closingDir = join(claimDir, 'closing')
 const closingPath = t => join(closingDir, `${encodeURIComponent(t)}.json`)
 const readClosing = t => {
@@ -904,7 +918,28 @@ switch (cmd) {
           text: `peers: ${x.name ?? x.session.slice(0, 8)} closed its part of ${t} (${x.reason}). ${rest.length ? `${rest.join(', ')} and you still hold it; it goes Done when the last holder closes.` : `You are the last holder: \`peers close ${t}\` when your part is done, and it goes Done.`}`,
         })
       }
+    // broadcast notices (`peers notice`): every session, once each, for 7 days
+    for (const n of readNotices()) if (n.at > Date.now() - NOTICE_DAYS * 864e5) out.push({ key: `notice:${n.id}`, text: `peers notice from ${n.by}: ${n.text}` })
     console.log(asJson ? JSON.stringify(out) : out.map(x => x.text).join('\n') || 'no notes')
+    break
+  }
+  // A message every session sees once, after its next tool result: a board switch, a new rule. Not for one session (SendMessage).
+  case 'notice': {
+    const text = argv.slice(1).filter(a => !FLAGS.has(a)).join(' ').trim()
+    const all = readNotices()
+    if (!text) {
+      console.log(asJson ? JSON.stringify(all) : all.map(n => `${n.id}  ${new Date(n.at).toISOString().slice(0, 16)}  ${n.by}: ${n.text}`).join('\n') || 'no notices')
+      break
+    }
+    if (argv[1] === 'rm') {
+      const left = all.filter(n => !argv.slice(2).includes(n.id))
+      writeNotices(left)
+      console.log(`removed ${all.length - left.length}`)
+      break
+    }
+    const n = { id: `n${Date.now().toString(36)}`, text, at: Date.now(), by: holderName({ session }, namesSync(homedir())) }
+    writeNotices([...all, n].slice(-50))
+    console.log(`notice ${n.id}: each live session sees it once after its next tool call (${NOTICE_DAYS} days)`)
     break
   }
   case 'sweep': {

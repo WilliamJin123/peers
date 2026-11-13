@@ -230,7 +230,7 @@ const readJ = async ($: any, p: string) => {
 }
 const peersCli = ($: any, args: string[]) =>
   $.process.run(['node', `${$.plugin.root}/bin/peers.mjs`, ...args], { timeoutMs: 15000, cwd: home, env: { PEERS_SESSION: session } })
-// A co-holder closed its part of a task this session holds (WA-1358): one note each, once. Reads two small files at
+// A co-holder closed its part of a task this session holds (WA-1358), or a broadcast `peers notice` (WA-1368): one note each, once. Reads two small files at
 // most every 30 s; the CLI (`peers notes`) runs only when an untold entry is there. Told keys live in $.store.
 let notesAt = 0
 const closeNotes = async ($: any): Promise<string[]> => {
@@ -240,10 +240,12 @@ const closeNotes = async ($: any): Promise<string[]> => {
   const dir = `${home}/.claude/peers-claims`
   const claim = await readJ($, `${dir}/${session}.json`)
   const held = [claim?.ticket, ...(claim?.also ?? []).map((a: any) => a.ticket)].filter(Boolean)
-  if (!held.length) return []
   const key = `closeTold:${session}`
   const told: string[] = ((await $.store.get(key)) as string[] | undefined) ?? []
-  let fresh = false
+  // broadcast notices (`peers notice`), 7 days
+  const notices = ((await readJ($, `${dir}/notices.json`)) ?? []) as { id: string; at: number }[]
+  let fresh = notices.some(n => n.at > now - 7 * 864e5 && !told.includes(`notice:${n.id}`))
+  if (!held.length && !fresh) return []
   for (const t of held)
     for (const x of (await readJ($, `${dir}/closing/${encodeURIComponent(t)}.json`)) ?? [])
       if (x.session !== session && !told.includes(`${t}:${x.session}:${x.at}`)) fresh = true
