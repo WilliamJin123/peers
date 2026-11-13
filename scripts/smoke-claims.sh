@@ -213,4 +213,9 @@ check 'close <id> names the task' "$(N r1 close task-15 -r done | head -1)" 'clo
 check 'close <id>: that one is Done, the current stays' "$(who TASK-15);$(who TASK-16)" 'Done|;In Progress|@peers:m1/cc-jjjj'
 check 'close <id> not held: refused' "$(N r1 close TASK-14 2>&1 | grep -c 'does not hold TASK-14')" '1'
 check 'close <id> not held: current stays' "$(who TASK-16)" 'In Progress|@peers:m1/cc-jjjj'
+# A repo with no commit yet: the first peers commit is the root commit.
+mkdir -p "$T/r0" && (cd "$T/r0" && git init -q && echo "a first line that is long enough to count" >a)
+N r0 take a >/dev/null
+check 'commit in an empty repo: the root commit' "$(N r0 commit -m first 2>&1 | grep -c ' first (1 file)')" '1'
+check 'commit in an empty repo: no parent' "$(git -C "$T/r0" rev-list --parents -1 HEAD | wc -w | tr -d ' ')" '1'
 exit $fails

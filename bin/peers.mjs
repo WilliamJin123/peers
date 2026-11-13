@@ -363,6 +363,7 @@ const unlock = () => {
   rmSync(LOCK, { recursive: true, force: true })
 }
 // HEAD plus this session's hunks of `mine`, into the private index `env` names. Notes: what stays out, and why.
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const buildTree = (mine, head, env, live, notes, all = false) => {
   git(['read-tree', head], { env })
   const whole = []
@@ -705,7 +706,7 @@ switch (cmd) {
     const last = l.commits.at(-1)?.sha
     // Our last commit counts only while HEAD holds it: after a reset it is gone, and its subject is free again.
     const held = last && spawnSync('git', ['merge-base', '--is-ancestor', last, 'HEAD']).status === 0
-    const used = [git(['log', '-1', '--format=%s', 'HEAD']).trim(), held ? spawnSync('git', ['log', '-1', '--format=%s', last], { encoding: 'utf8' }).stdout?.trim() : '']
+    const used = [spawnSync('git', ['log', '-1', '--format=%s', 'HEAD'], { encoding: 'utf8' }).stdout?.trim() ?? '', held ? spawnSync('git', ['log', '-1', '--format=%s', last], { encoding: 'utf8' }).stdout?.trim() : '']
     if (used.includes(subject)) die(`peers commit: "${subject}" is the subject of the last commit. Write a new message.`)
     // `-- <paths>`: only these of your files (with --whole, a regenerated file stays out).
     // --whole with paths: every dirty file under them, in the ledger or not (an untracked file it missed).
@@ -748,13 +749,15 @@ switch (cmd) {
       // Before the files are read: an edit after this is not in the commit, so its file stays uncommitted.
       at = Date.now()
       const live = peers()
-      const head = git(['rev-parse', 'HEAD']).trim()
-      const { files } = buildTree(mine, head, env, live, notes, argv.includes('--whole'))
+      // no commit yet: build on the empty tree, and the commit is the root
+      const head = spawnSync('git', ['rev-parse', '-q', '--verify', 'HEAD'], { encoding: 'utf8' }).stdout?.trim() ?? ''
+      const base = head || EMPTY_TREE
+      const { files } = buildTree(mine, base, env, live, notes, argv.includes('--whole'))
       const tree = git(['write-tree'], { env }).trim()
-      if (tree === git(['rev-parse', `${head}^{tree}`]).trim()) die(`nothing of yours to commit${notes.length ? `\n${notes.join('\n')}` : ''}`)
-      const commit = git(['commit-tree', tree, '-p', head, '-F', '-'], { input: body }).trim()
+      if (tree === git(['rev-parse', `${base}^{tree}`]).trim()) die(`nothing of yours to commit${notes.length ? `\n${notes.join('\n')}` : ''}`)
+      const commit = git(['commit-tree', tree, ...(head ? ['-p', head] : []), '-F', '-'], { input: body }).trim()
       try {
-        git(['update-ref', '-m', `commit: ${msg}`, 'HEAD', commit, head])
+        git(['update-ref', '-m', `commit: ${msg}`, 'HEAD', commit, head || '0'.repeat(40)])
       } catch (e) {
         if (attempt < 5) continue // a peer committed meanwhile: build again on the new HEAD
         throw e
