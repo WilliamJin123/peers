@@ -125,7 +125,7 @@ export type Board = {
   /** How a session reads the task's text: a command or a pointer. Queue prompts and `peers next` print it. */
   viewHint?(id: string): string
   /** Column rules (config `lint`): one line per rule that tasks break. `peers sweep` prints them. Optional. */
-  lint?(rules: { status: string; needs: string }[]): string[] | Promise<string[]>
+  lint?(rules: { status: string; needs: string; ends?: boolean }[]): string[] | Promise<string[]>
   /** Who else holds it: other machines, other people. Default []. */
   others?(id: string): string[] | Promise<string[]>
   // more
@@ -139,6 +139,8 @@ export type Board = {
   queue?(id: string, labels: string[]): unknown
   /** Tasks that wait on a person (config statuses.waiting): `peers waiting`, the view's Needs you. [] when unset. */
   waiting?(): { id: string; title: string | null }[] | Promise<{ id: string; title: string | null }[]>
+  /** Tasks in a test or soak window (config statuses.testing): the view's In testing. [] when unset. */
+  testing?(): { id: string; title: string | null }[] | Promise<{ id: string; title: string | null }[]>
   /** The board's status names (GitHub: labels): doctor checks config statuses against them. null: cannot list. */
   names?(): string[] | null | Promise<string[] | null>
 }

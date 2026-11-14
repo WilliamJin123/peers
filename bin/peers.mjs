@@ -26,7 +26,7 @@ Scope: the files this session edited (ledger kept by the peers mod). In a file a
 (--whole takes the file as it is). held: who holds each task (from the ledgers). A session may hold several tasks: claim adds one and makes it current, close moves to the next, unclaim lets one go.
 Work queue: queue add puts tasks in order, by lane or pinned to a session (/rename name); a session that ran serve gets the next one
 by itself when idle and holding none (the peers mod submits it); next takes one now.
-waiting: the board's tasks that wait on a person (config statuses.waiting); --write keeps them for the view.
+waiting: the board's tasks that wait on a person (config statuses.waiting); --write keeps them and the testing column (statuses.testing) for the view.
 sweep: the board's In Progress, held to the
 ledgers (ready runs it too). Tasks: Backlog.md by default (\`backlog\` on PATH), or Jira, GitHub Issues or your own module: README, Task boards.
 view: a live page (127.0.0.1:6421) of every session's uncommitted edits, each in its author's color; /peers-view shows it in a pane.
@@ -937,7 +937,11 @@ switch (cmd) {
     // No waiting name, or a board without waiting(): an empty list, never an error.
     const items = board.waiting ? await tryBoard('waiting', () => board.waiting()) : []
     if (items === null) process.exit(1)
-    if (argv.includes('--write')) Q.setWaiting({ at: Date.now(), status: statusesOf(config).waiting, items })
+    if (argv.includes('--write')) {
+      Q.setWaiting({ at: Date.now(), status: statusesOf(config).waiting, items })
+      const testing = board.testing ? await tryBoard('testing', () => board.testing()) : []
+      if (testing !== null) Q.setTesting({ at: Date.now(), status: statusesOf(config).testing, items: testing })
+    }
     if (argv.includes('--json')) console.log(JSON.stringify(items))
     else if (!argv.includes('--write')) console.log(items.length ? items.map(t => `${t.id} - ${t.title ?? ''}`).join('\n') : 'nothing waits on a person')
     break
