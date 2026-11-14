@@ -6,7 +6,15 @@ set -e
 peers="$(cd "$(dirname "$0")/.." && pwd)/bin/peers.mjs"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-real=$(command -v backlog)
+# Backlog.md itself, never aerie's shim: the shim's pass-through would find this wrapper next on PATH and loop
+real=${AERIE_REAL_BACKLOG:-}
+if [ -z "$real" ]; then
+  for b in $(which -a backlog); do
+    case "$(realpath "$b")" in */aerie/dist/shim.js) continue ;; esac
+    real=$b && break
+  done
+fi
+[ -n "$real" ] || { echo "smoke-claims: no Backlog.md on PATH (set AERIE_REAL_BACKLOG)"; exit 1; }
 # The board, slowed on demand: an edit lands, then 3 s pass (the push hook) before the command returns.
 mkdir -p "$T/bin"
 cat >"$T/bin/backlog" <<W
