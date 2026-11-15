@@ -103,7 +103,7 @@ peers unclaim wa-b5f        # let go of a task: back to To Do
 peers status                # your dirty files, peers hidden
 peers diff
 peers commit -m "add thing" # your files, your hunks only, trailer Ticket: wa-b5f
-peers commit -m "x" -- a.ts # only those of your files
+peers commit -m "x" -- a.ts # only those of your files; an own edit over a day old goes only when named
 peers commit -m "x" --whole -- src  # every dirty file under src, untracked too
 peers take map/new.c4       # claim a file peers missed: its diff lines go to your ledger
 git diff --name-only | peers take -   # a file list may be - (stdin); a done peer's files too

@@ -121,6 +121,8 @@ function pathsOf(list) {
   }
   return out.map(p => slash(p, winOf(p)).replace(/^\.\//, ''))
 }
+// An own edit this old stays out of a commit that does not name it.
+const STALE_MS = 24 * 3600_000
 const few = (xs, n = 3) => xs.slice(0, n).join(', ') + (xs.length > n ? ` and ${xs.length - n} more` : '')
 
 function die(msg, code = 1) {
@@ -770,7 +772,12 @@ switch (cmd) {
     const dash = argv.indexOf('--')
     const only = dash > 0 ? pathsOf(argv.slice(dash + 1)).map(p => p.replace(/\/$/, '')) : null
     const under = f => only.some(p => f === p || f.startsWith(`${p}/`))
-    const mine = only && argv.includes('--whole') ? [...dirtySet()].filter(under) : mineDirty(l).filter(f => !only || under(f))
+    const all = only && argv.includes('--whole') ? [...dirtySet()].filter(under) : mineDirty(l).filter(f => !only || under(f))
+    // An own edit older than STALE_MS that the command does not name stays out: a long session forgets it across
+    // compactions, and it rode into an unrelated commit (autobrowse cdc15bc, an edit 17 days old).
+    const stale = only ? [] : all.filter(f => l.files[f]?.last < Date.now() - STALE_MS)
+    const mine = all.filter(f => !stale.includes(f))
+    if (stale.length) process.stderr.write(`left out, your edit is over a day old (name it: peers commit -m "..." -- <file>): ${few(stale.map(f => `${f} (${new Date(l.files[f].last).toISOString().slice(0, 10)})`), 5)}\n`)
     // A named path also takes its dirty files that no live session holds: one written earlier in this same
     // command is in no ledger yet (it lands after the command ends). A peer's file stays out, and is named.
     const left = []
