@@ -122,6 +122,11 @@ let mineStarted: { id: string; started: number }[] = []
 
 const refreshPeers = async ($: any) => {
   await sync($)
+  // `"band": false` in the config: no band in any session (a screen recording); live at the next refresh.
+  if ((await readJ($, `${home}/.claude/peers/config.json`))?.band === false) {
+    if ((await read($, peersAtom)).length) await update($, peersAtom, () => [])
+    return
+  }
   const all = new Set<string>(k($).roots)
   if (cwdRoot) all.add(cwdRoot)
   const list: Peer[] = []
